@@ -111,17 +111,17 @@ const SPEC = Object.fromEntries(CONTROLS.filter(c => c.length > 1).map(c => [c[0
 const PROFILES = {
   none:    { label: 'Без профиля', set: {}, mul: {}, add: {} },
   phone:   { label: 'Смартфон',
-             set: { sharpen: 55, nr: 45, gsize: 1, edgeSoft: 10, distort: 6, fringe: 15, clip: 45, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
+             set: { sharpen: 55, nr: 45, edgeSoft: 10, distort: 6, fringe: 15, clip: 45, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
              mul: { grain: 0.35, cgrain: 0.3, soft: 0.4, bloom: 0.7 }, add: { sat: 8, contrast: 6, shadows: -8 } },
   dslr:    { label: 'Зеркалка',
              set: { sharpen: 8, nr: 0, edgeSoft: 25, distort: 3, fringe: 10, clip: 20, jpeg: 0, ca: 10, vig: 16, shake: 0 },
              mul: { grain: 0.6, cgrain: 0.5 }, add: {} },
   film:    { label: 'Плёнка',
-             set: { sharpen: 0, nr: 0, gsize: 2, edgeSoft: 20, distort: 2, fringe: 0, clip: 0, jpeg: 0, ca: 6, vig: 20, fade: 5, stint: -6, shake: 0 },
-             mul: { grain: 1.9, cgrain: 0.6, soft: 1.2, bloom: 1.5 }, add: { warm: 8, sat: -6, contrast: -2 } },
+             set: { sharpen: 0, nr: 0, edgeSoft: 20, distort: 2, fringe: 0, clip: 0, jpeg: 0, ca: 6, vig: 20, fade: 5, stint: -6, shake: 0 },
+             mul: { grain: 1.9, cgrain: 0.6, gsize: 1.7, soft: 1.2, bloom: 1.5 }, add: { warm: 8, sat: -6, contrast: -2 } },
   compact: { label: 'Старая мыльница',
-             set: { sharpen: 35, nr: 25, gsize: 1.5, edgeSoft: 40, distort: 10, fringe: 45, clip: 70, jpeg: 45, ca: 22, vig: 25, fade: 1, shake: 25 },
-             mul: { grain: 1.3, cgrain: 2.2, soft: 1.1 }, add: { sat: 6, contrast: 8 } },
+             set: { sharpen: 35, nr: 25, edgeSoft: 40, distort: 10, fringe: 45, clip: 70, jpeg: 45, ca: 22, vig: 25, fade: 1, shake: 25 },
+             mul: { grain: 1.3, cgrain: 2.2, gsize: 1.3, soft: 1.1 }, add: { sat: 6, contrast: 8 } },
 };
 
 const $ = id => document.getElementById(id);
@@ -137,7 +137,15 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 // ---------- UI ----------
 const box = $('controls');
 for (const c of CONTROLS) {
-  if (c.length === 1) { const h = document.createElement('h2'); h.textContent = c[0]; box.append(h); continue; }
+  if (c.length === 1) {
+    const h = document.createElement('h2'); h.textContent = c[0]; box.append(h);
+    if (c[0] === 'Зерно') {
+      const b = document.createElement('button'); b.id = 'autograin'; b.disabled = true; b.style.width = '100%';
+      b.textContent = 'Подогнать зерно под фото'; b.title = 'Меняет только три ползунка зерна, остальное не трогает';
+      box.append(b);
+    }
+    continue;
+  }
   const [name, label, min, max, step, def] = c;
   const row = document.createElement('div'); row.className = 'row';
   row.innerHTML = `<label><span>${label}</span><output></output></label><input type="range" min="${min}" max="${max}" step="${step}" value="${def}">`;
@@ -194,7 +202,7 @@ function toCanvas(img) {
 function loadImage(img) {
   srcImg = toCanvas(img);
   $('drop').style.display = 'none'; view.style.display = 'block';
-  for (const id of ['save', 'compare', 'auto', 'vary']) $(id).disabled = false;
+  for (const id of ['save', 'compare', 'auto', 'vary', 'autograin']) $(id).disabled = false;
   autoNote = '';
   schedule();
 }
@@ -245,9 +253,11 @@ function autoSettings(s) {
   // nudge the midtones part of the way toward a normal exposure, never a full correction
   v.exp = clamp(50 * Math.log2(Math.pow(0.45, 2.2) / Math.max(Math.pow(s.p50, 2.2), 1e-4)) * 0.2, -15, 15);
   v.sat = clamp((0.36 - s.sat) * 60, -20, 10);
-  v.grain = clamp(26 - (s.noise - 1.5) * 6, 0, 24);            // less if the photo is already noisy
+  // grain target follows the light level (darker scene = higher ISO = more grain);
+  // the amount already present in the photo is subtracted later in buildSettings
+  v.grain = grainTarget(s);
   v.cgrain = v.grain * 0.4;
-  v.gsize = s.width < 1800 ? 1 : s.width < 3200 ? 1.5 : 2;
+  v.gsize = s.width / 1400;                                    // keeps grain the same apparent size at any resolution
   v.soft = clamp((s.sharp - 2.5 * s.noise) * 5, 10, 60);       // soften only what is over-sharp
   v.bloom = s.bright < 0.004 ? 0 : clamp(12 + s.bright * 250, 12, 40);
   v.haze = s.bright > 0.06 ? 2 : 0;
@@ -261,12 +271,16 @@ function autoSettings(s) {
   v.edgeSoft = 15; v.distort = 2;
   return v;
 }
+const grainTarget = s => 16 + 18 * clamp((0.5 - s.p50) / 0.35, 0, 1);
+// noise already in the photo, in "Зерно" slider units (1.8 = detail floor of a clean image, 0.45 = measured response per unit)
+const grainExisting = s => Math.sqrt(Math.max(0, s.noise * s.noise - 1.8 * 1.8)) / 0.45;
 function buildSettings(stats, profId, jitter, rnd) {
   const v = autoSettings(stats), pr = PROFILES[profId] || PROFILES.none;
   for (const k in pr.mul) v[k] *= pr.mul[k];
   for (const k in pr.add) v[k] += pr.add[k];
   for (const k in pr.set) v[k] = pr.set[k];
-  if (pr.set.gsize && stats.width >= 3200) v.gsize = pr.set.gsize + 0.5;
+  // noise adds in quadrature: top up only what is missing to reach the target
+  if (v.grain > 0) { const e = grainExisting(stats), k = e >= 0.92 * v.grain ? 0 : Math.sqrt(Math.max(0, v.grain * v.grain - e * e)) / v.grain; v.grain *= k; v.cgrain *= k; }
   for (const k in v) {
     const [, , min, max, step] = SPEC[k];
     if (jitter && k !== 'gsize') v[k] *= 1 + (rnd() - 0.5) * 0.26;
@@ -280,6 +294,12 @@ function applyAuto(jitter) {
   setValues(buildSettings(s, profile, jitter, Math.random));
   autoNote = ` · авто (${PROFILES[profile].label.toLowerCase()}): шум ${s.noise.toFixed(1)}, резкость ${s.sharp.toFixed(1)}, яркие зоны ${(s.bright * 100).toFixed(1)}%, кожа ${(s.skin * 100).toFixed(0)}%`;
 }
+function applyAutoGrain() {
+  const s = analyze(srcImg), v = buildSettings(s, profile, false, Math.random);
+  setValues({ grain: v.grain, cgrain: v.cgrain, gsize: v.gsize });
+  autoNote = ` · зерно: уже есть ${grainExisting(s).toFixed(0)}, цель ${(grainTarget(s) * (PROFILES[profile].mul.grain || 1)).toFixed(0)}, добавлено ${v.grain}`;
+}
+$('autograin').onclick = applyAutoGrain;
 $('auto').onclick = () => applyAuto(false);
 $('vary').onclick = () => { newVariation(); applyAuto(true); };
 
