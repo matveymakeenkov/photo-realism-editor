@@ -136,8 +136,9 @@ const SPEC = Object.fromEntries(CONTROLS.filter(c => c.length > 1).map(c => [c[0
 const PROFILES = {
   none:    { label: 'Без профиля', set: {}, mul: {}, add: {} },
   phone:   { label: 'Смартфон',
-             set: { look: 70, dof: 12, sharpen: 55, nr: 45, edgeSoft: 10, distort: 6, fringe: 15, clip: 45, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
-             mul: { grain: 0.35, cgrain: 0.3, soft: 0.4, bloom: 0.7 }, add: { sat: 8, contrast: 6, shadows: -8 } },
+             set: { look: 70, dof: 12, sharpen: 32, nr: 45, edgeSoft: 10, distort: 6, fringe: 15, clip: 22, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
+             // phones flatten the tones (HDR): lifted shadows, no extra contrast
+             mul: { grain: 0.35, cgrain: 0.3, soft: 0.4, bloom: 0.7 }, add: { sat: 5, contrast: -3, shadows: -10 } },
   dslr:    { label: 'Зеркалка',
              set: { look: 70, dof: 55, sharpen: 8, nr: 0, edgeSoft: 25, distort: 3, fringe: 10, clip: 20, jpeg: 0, ca: 10, vig: 16, shake: 0 },
              mul: { grain: 0.6, cgrain: 0.5 }, add: {} },
@@ -852,7 +853,7 @@ function blurData(srcCanvas, w, h, r) {
 
 // per-camera colour response: 3x3 matrix in linear light (rows sum to 1) plus shadow / highlight tint
 const LOOKS = {
-  phone:   { m: [1.10, -0.06, -0.04, -0.05, 1.10, -0.05, -0.03, -0.09, 1.12], sh: [0, 0, 0.02],        hl: [0, 0, 0] },
+  phone:   { m: [1.06, -0.04, -0.02, -0.03, 1.06, -0.03, -0.02, -0.05, 1.07], sh: [0, 0, 0.02],        hl: [0, 0, 0] },
   dslr:    { m: [1.03, -0.02, -0.01, -0.01, 1.02, -0.01, 0, -0.03, 1.03],     sh: [0, 0, 0],           hl: [0.01, 0, -0.01] },
   film:    { m: [1.04, 0.03, -0.07, -0.02, 1.03, -0.01, -0.03, 0.09, 0.94],   sh: [-0.03, 0.02, 0.03], hl: [0.03, 0.005, -0.05] },
   compact: { m: [1.12, -0.07, -0.05, -0.05, 1.08, -0.03, -0.02, -0.08, 1.10], sh: [-0.01, 0.02, 0],    hl: [0, 0.01, -0.02] },
