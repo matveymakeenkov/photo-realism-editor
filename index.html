@@ -29,10 +29,19 @@
   .chips button.on { background: var(--accent); color: #1b1408; border-color: var(--accent); font-weight: 600; }
   .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--dim); font-size: 13px; }
   .check input { accent-color: var(--accent); }
-  canvas { max-width: 100%; max-height: 100%; display: none; box-shadow: 0 4px 30px #000a; }
   #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 48px 32px; text-align: center; color: var(--dim); max-width: 440px; }
   #drop b { color: var(--text); display: block; font-size: 16px; margin-bottom: 6px; }
-  main.over #drop, main.over canvas { outline: 2px solid var(--accent); outline-offset: 6px; }
+  main.over #drop, main.over #stage { outline: 2px solid var(--accent); outline-offset: 6px; }
+  #stage { position: absolute; inset: 16px 16px 34px 16px; overflow: hidden; display: none; cursor: grab; touch-action: none; }
+  #stage canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; display: block; box-shadow: 0 4px 30px #000a; }
+  #orig { pointer-events: none; }
+  #splitter { position: absolute; top: 0; bottom: 0; width: 3px; background: #fff; box-shadow: 0 0 5px #000; display: none; cursor: ew-resize; }
+  #splitter::after { content: '◀ ▶'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #fff; color: #222; font-size: 10px; padding: 6px 5px; border-radius: 12px; white-space: nowrap; pointer-events: none; }
+  #viewbar { position: absolute; right: 22px; top: 22px; display: none; gap: 6px; z-index: 3; align-items: center; }
+  #viewbar button { padding: 4px 9px; font-size: 12px; background: #2b2e34dd; }
+  #viewbar button.on { background: var(--accent); color: #1b1408; border-color: var(--accent); }
+  #viewbar output { font-size: 12px; color: var(--dim); min-width: 40px; text-align: right; text-shadow: 0 0 4px #000; }
+  .chips .del { margin-left: 6px; opacity: .6; }
   #status { position: absolute; left: 16px; right: 16px; bottom: 10px; color: var(--dim); font-size: 12px; }
   .hint { color: var(--dim); font-size: 12px; margin-top: 14px; }
   @media (max-width: 720px) { body { flex-direction: column-reverse; } aside { width: 100%; max-height: 50%; border-right: 0; border-top: 1px solid var(--line); } }
@@ -43,10 +52,13 @@
   <h1>Фото-реализм</h1>
   <div class="btns">
     <button id="open" class="wide">Открыть фото (одно или несколько)…</button>
+    <button id="allAi" class="wide" title="Глубина, контур и разметка кожи; выбор запоминается">Включить все нейросети</button>
   </div>
   <h2>Камера</h2>
   <div class="chips" id="profiles"></div>
   <div class="row"><label><span>Сила обработки</span><output id="strengthOut">100%</output></label><input type="range" id="strength" min="0" max="150" step="5" value="100"></div>
+  <div class="btns"><button id="refBtn" class="wide" title="Зерно, контраст, яркость, цвет и резкость подгоняются под выбранный настоящий снимок">Подогнать под эталонное фото…</button></div>
+  <input type="file" id="refFile" accept="image/*" hidden>
   <div class="btns">
     <button id="auto" disabled title="Подобрать настройки под это фото с учётом выбранной камеры">✨ Авто</button>
     <button id="vary" disabled title="Те же настройки с небольшим случайным разбросом">🎲 Вариация</button>
@@ -59,12 +71,15 @@
   <div class="btns">
     <button id="preset">Как в примере</button>
     <button id="reset">Сбросить всё</button>
+    <button id="savePreset" class="wide">Сохранить текущие настройки как набор…</button>
   </div>
-  <p class="hint">Одно фото открывается для ручной настройки. Несколько фото сразу обрабатываются в режиме «Авто» с выбранной камерой и скачиваются одним ZIP-архивом. Всё происходит на вашем компьютере, файлы никуда не отправляются. Кнопки с пометкой «нейросеть» один раз скачивают свою модель из интернета; сами фото при этом остаются у вас.</p>
+  <div class="chips" id="userPresets" style="margin-top:8px"></div>
+  <p class="hint">Одно фото открывается для ручной настройки. Колесо мыши меняет масштаб, перетаскивание двигает фото. Несколько фото сразу обрабатываются в режиме «Авто» с выбранной камерой и скачиваются одним ZIP-архивом. Всё происходит на вашем компьютере, файлы никуда не отправляются. Кнопки с пометкой «нейросеть» один раз скачивают свою модель из интернета; сами фото при этом остаются у вас.</p>
 </aside>
 <main id="main">
   <div id="drop"><b>Перетащите фото сюда</b>одно — для настройки, несколько — для пакетной обработки</div>
-  <canvas id="view"></canvas>
+  <div id="stage"><canvas id="view"></canvas><canvas id="orig"></canvas><div id="splitter"></div></div>
+  <div id="viewbar"><output id="zoomOut"></output><button id="fitBtn" title="Показать фото целиком">Вписать</button><button id="z100" title="Один пиксель фото = один пиксель экрана">100%</button><button id="splitBtn" title="Слева оригинал, справа результат">Шторка до/после</button></div>
   <div id="status"></div>
 </main>
 
@@ -75,6 +90,7 @@ const CONTROLS = [
   ['dof',     'Сила размытия фона',     0, 100, 1, 0, 0],
   ['focus',   'Дистанция фокуса (далеко ↔ близко)', 0, 100, 1, 50, 50],
   ['dofRange','Зона резкости',          0, 50, 1, 12, 12],
+  ['bokeh',   'Кружки бликов в размытии', 0, 100, 1, 40, 40],
   ['Свет по форме'],
   ['relight', 'Сила света по форме (нужна глубина)', 0, 100, 1, 0, 0],
   ['lightAngle','Направление света, °', 0, 355, 5, 135, 135],
@@ -110,6 +126,7 @@ const CONTROLS = [
   ['sat',     'Насыщенность',         -50, 50, 1, 4, 0],
   ['warm',    'Теплота',              -50, 50, 1, 0, 0],
   ['fade',    'Блёклые чёрные',         0, 15, 0.5, 0.5, 0],
+  ['look',    'Цвет выбранной камеры',  0, 100, 1, 0, 0],
   ['Сжатие'],
   ['jpeg',    'Следы JPEG-сжатия',      0, 100, 1, 0, 0],
 ];
@@ -119,16 +136,16 @@ const SPEC = Object.fromEntries(CONTROLS.filter(c => c.length > 1).map(c => [c[0
 const PROFILES = {
   none:    { label: 'Без профиля', set: {}, mul: {}, add: {} },
   phone:   { label: 'Смартфон',
-             set: { dof: 12, sharpen: 55, nr: 45, edgeSoft: 10, distort: 6, fringe: 15, clip: 45, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
+             set: { look: 70, dof: 12, sharpen: 55, nr: 45, edgeSoft: 10, distort: 6, fringe: 15, clip: 45, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
              mul: { grain: 0.35, cgrain: 0.3, soft: 0.4, bloom: 0.7 }, add: { sat: 8, contrast: 6, shadows: -8 } },
   dslr:    { label: 'Зеркалка',
-             set: { dof: 55, sharpen: 8, nr: 0, edgeSoft: 25, distort: 3, fringe: 10, clip: 20, jpeg: 0, ca: 10, vig: 16, shake: 0 },
+             set: { look: 70, dof: 55, sharpen: 8, nr: 0, edgeSoft: 25, distort: 3, fringe: 10, clip: 20, jpeg: 0, ca: 10, vig: 16, shake: 0 },
              mul: { grain: 0.6, cgrain: 0.5 }, add: {} },
   film:    { label: 'Плёнка',
-             set: { dof: 40, sharpen: 0, nr: 0, edgeSoft: 20, distort: 2, fringe: 0, clip: 0, jpeg: 0, ca: 6, vig: 20, fade: 5, stint: -6, shake: 0 },
+             set: { look: 70, dof: 40, sharpen: 0, nr: 0, edgeSoft: 20, distort: 2, fringe: 0, clip: 0, jpeg: 0, ca: 6, vig: 20, fade: 5, stint: -6, shake: 0 },
              mul: { grain: 1.9, cgrain: 0.6, gsize: 1.7, soft: 1.2, bloom: 1.5 }, add: { warm: 8, sat: -6, contrast: -2 } },
   compact: { label: 'Старая мыльница',
-             set: { dof: 6, sharpen: 35, nr: 25, edgeSoft: 40, distort: 10, fringe: 45, clip: 70, jpeg: 45, ca: 22, vig: 25, fade: 1, shake: 25 },
+             set: { look: 70, dof: 6, sharpen: 35, nr: 25, edgeSoft: 40, distort: 10, fringe: 45, clip: 70, jpeg: 45, ca: 22, vig: 25, fade: 1, shake: 25 },
              mul: { grain: 1.3, cgrain: 2.2, gsize: 1.3, soft: 1.1 }, add: { sat: 6, contrast: 8 } },
 };
 
@@ -140,6 +157,7 @@ let pending = false, showOriginal = false, fileName = 'photo', busy = false;
 let profile = 'none', autoNote = '', renderToken = 0;
 let variation = { seed: 0, angle: 0.45 };
 let dofEnabled = false, srcDepth = null, depthPipe = null;
+let srcMono = false;
 let srcMatte = null, srcParse = null, matteOn = false, parseOn = false, matteNet = null, parsePipe = null, TF = null;
 const srcMaps = () => ({ depth: srcDepth, matte: srcMatte, parse: srcParse });
 const PREVIEW_MAX_PIXELS = 1.8e6;
@@ -178,7 +196,7 @@ for (const c of CONTROLS) {
   row.innerHTML = `<label><span>${label}</span><output></output></label><input type="range" min="${min}" max="${max}" step="${step}" value="${def}">`;
   const inp = row.querySelector('input'), out = row.querySelector('output');
   const upd = () => { out.textContent = inp.value; };
-  inp.addEventListener('input', () => { upd(); schedule(); });
+  inp.addEventListener('input', () => { upd(); draftSchedule(); });
   inp.addEventListener('dblclick', () => { inp.value = def; upd(); schedule(); });
   inp._upd = upd; upd();
   inputs[name] = inp; box.append(row);
@@ -187,14 +205,14 @@ function setValues(v) { for (const k in v) if (inputs[k]) { inputs[k].value = v[
 function setAll(idx) { autoNote = ''; setValues(Object.fromEntries(Object.values(SPEC).map(c => [c[0], c[idx]]))); }
 $('preset').onclick = () => setAll(5);
 $('reset').onclick = () => setAll(6);
-const params = () => Object.fromEntries(Object.entries(inputs).map(([k, v]) => [k, +v.value]));
+const params = () => ({ ...Object.fromEntries(Object.entries(inputs).map(([k, v]) => [k, +v.value])), _look: profile, _mono: srcMono });
 
 const chipBox = $('profiles');
 for (const [id, pr] of Object.entries(PROFILES)) {
   const b = document.createElement('button'); b.textContent = pr.label; b.dataset.id = id;
   if (id === profile) b.className = 'on';
   b.onclick = () => {
-    profile = id;
+    profile = id; saveState();
     for (const o of chipBox.children) o.classList.toggle('on', o === b);
     if (srcImg) applyAuto(false);
   };
@@ -228,9 +246,10 @@ function toCanvas(img) {
 }
 function loadImage(img) {
   srcImg = toCanvas(img);
-  $('drop').style.display = 'none'; view.style.display = 'block';
+  $('drop').style.display = 'none'; showStage();
   for (const id of ['save', 'compare', 'auto', 'vary', 'autograin']) $(id).disabled = false;
   autoNote = ''; srcDepth = srcMatte = srcParse = null;
+  srcMono = colorStats(srcImg).sat < 0.03;      // black-and-white input stays black-and-white
   schedule();
   prepareMaps();
 }
@@ -389,7 +408,7 @@ async function prepareMaps() {
 function aiButton(id, onLabel, ensure, turnOn) {
   $(id).onclick = async () => {
     const b = $(id), old = b.textContent; b.disabled = true; b.textContent = 'Загружаю модель…';
-    try { await ensure(); turnOn(); b.textContent = onLabel; if (srcImg) await prepareMaps(); else $('status').textContent = 'Модель готова'; }
+    try { await ensure(); turnOn(); saveState(); b.textContent = onLabel; if (srcImg) await prepareMaps(); else $('status').textContent = 'Модель готова'; }
     catch (err) { b.disabled = false; b.textContent = old; $('status').textContent = 'Не удалось загрузить модель (нужен интернет): ' + err.message; }
   };
 }
@@ -462,19 +481,19 @@ async function prepareDepth() {
 $('dofBtn').onclick = async () => {
   const b = $('dofBtn'); b.disabled = true; b.textContent = 'Загружаю модель…';
   try {
-    await getDepthPipe(); dofEnabled = true; b.textContent = 'Автофокус включён — клик по фото переносит фокус';
+    await getDepthPipe(); dofEnabled = true; saveState(); b.textContent = 'Автофокус включён — клик по фото переносит фокус';
     if (srcImg) await prepareMaps(); else $('status').textContent = 'Модель глубины готова';
   } catch (err) {
     b.disabled = false; b.textContent = 'Включить автофокус (нейросеть, ~27 МБ)';
     $('status').textContent = 'Не удалось загрузить модель (нужен интернет): ' + err.message;
   }
 };
-view.addEventListener('click', e => {
-  if (!srcDepth) return;
+function focusClick(e) {
+  if (!srcDepth || sizeOverride) return;
   const r = view.getBoundingClientRect(), w = srcDepth.width, h = srcDepth.height;
   const x = clamp((e.clientX - r.left) / r.width * w | 0, 0, w - 1), y = clamp((e.clientY - r.top) / r.height * h | 0, 0, h - 1);
   setValues({ focus: Math.round(srcDepth._data[(y * w + x) * 4] / 255 * 100) });
-});
+}
 
 // ---------- auto mode ----------
 function analyze(src) {
@@ -517,10 +536,10 @@ window._analyze = analyze;
 function autoSettings(s) {
   const v = Object.fromEntries(Object.values(SPEC).map(c => [c[0], c[6]]));
   const range = s.p98 - s.p2;
-  v.contrast = clamp((0.9 - range) * 70, 0, 15);              // only lift genuinely flat photos
+  v.contrast = s.p98 > 0.55 ? clamp((0.9 - range) * 70, 0, 15) : 0;   // a dark scene is not a flat one              // only lift genuinely flat photos
   // nudge the midtones part of the way toward a normal exposure, never a full correction
   v.exp = clamp(50 * Math.log2(Math.pow(0.45, 2.2) / Math.max(Math.pow(s.p50, 2.2), 1e-4)) * 0.2, -15, 15);
-  v.sat = clamp((0.36 - s.sat) * 60, -20, 10);
+  v.sat = s.sat < 0.03 ? 0 : clamp((0.36 - s.sat) * 60, -20, 10);
   // grain target follows the light level (darker scene = higher ISO = more grain);
   // the amount already present in the photo is subtracted later in buildSettings
   v.grain = grainTarget(s);
@@ -554,11 +573,12 @@ function buildSettings(stats, profId, jitter, rnd, focus, lightAngle) {
   for (const k in v) if (k !== 'focus' && k !== 'dofRange' && k !== 'gsize' && k !== 'lightAngle') v[k] = SPEC[k][6] + (v[k] - SPEC[k][6]) * st;
   for (const k in v) {
     const [, , min, max, step] = SPEC[k];
-    if (jitter && k !== 'gsize' && k !== 'focus' && k !== 'dofRange' && k !== 'lightAngle') v[k] *= 1 + (rnd() - 0.5) * 0.26;
+    if (jitter && k !== 'gsize' && k !== 'focus' && k !== 'dofRange' && k !== 'lightAngle' && k !== 'bokeh') v[k] *= 1 + (rnd() - 0.5) * 0.26;
     v[k] = clamp(Math.round(v[k] / step) * step, min, max);
   }
   if (focus == null) { v.dof = 0; v.relight = 0; }
   else { v.focus = Math.round(focus); if (lightAngle != null) v.lightAngle = Math.round(lightAngle / 5) * 5 % 360; }
+  v._look = profId; v._mono = stats.sat < 0.03;
   return v;
 }
 // ---------- contrast guard: measure the result and back off until it matches the source ----------
@@ -567,21 +587,25 @@ function lumStats(c) {
   const hist = new Uint32Array(256); let a = 0, a2 = 0;
   for (let i = 0; i < d.length; i += 4) { const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; a += l; a2 += l * l; hist[l | 0]++; }
   const m = a / n; let acc = 0, p2 = 0;
-  for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= 0.02 * n) { p2 = k; break; } }
-  return { std: Math.sqrt(a2 / n - m * m), p2 };
+  let p50 = 255, got2 = false;
+  for (let k = 0; k < 256; k++) { acc += hist[k]; if (!got2 && acc >= 0.02 * n) { p2 = k; got2 = true; } if (acc >= 0.5 * n) { p50 = k; break; } }
+  return { std: Math.sqrt(a2 / n - m * m), p2, p50 };
 }
 function guardContrast(src, v, depth, profId) {
   const sw = 320, sh = Math.max(1, Math.round(320 * src.height / src.width));
   const a = newCanvas(sw, sh); a.getContext('2d', { willReadFrequently: true }).drawImage(src, 0, 0, sw, sh);
   const ref = lumStats(a), out = newCanvas(sw, sh);
   // a camera profile may ask for a little extra punch; everything else must stay at the source level
-  const allow = 1.02 + ((PROFILES[profId] || PROFILES.none).add.contrast || 0) * 0.005;
+  const padd = (PROFILES[profId] || PROFILES.none).add.contrast || 0;
+  const allow = 1.02 + padd * 0.005 + Math.max(0, v.contrast - padd) * 0.012;   // a deliberate lift of a flat photo is allowed
   let ratio = 1;
   for (let it = 0; it < 7; it++) {
     process(src, sw, sh, { ...v, grain: 0, cgrain: 0, jpeg: 0, sharpen: 0 }, out, variation, depth);
     const o = lumStats(out); ratio = o.std / ref.std;
     const tooPunchy = ratio > allow, crushed = o.p2 < ref.p2 - 5;
-    if (!tooPunchy && !crushed) break;
+    const dim = v.exp >= 0 && o.p50 < ref.p50 - 2;      // vignette, shadows etc. must not make the photo darker overall
+    if (!tooPunchy && !crushed && !dim) break;
+    if (dim) v.exp = Math.min(40, v.exp + Math.max(2, Math.round((ref.p50 - o.p50) * 0.6)));
     if (tooPunchy) {
       v.contrast = clamp(Math.round(v.contrast - Math.max(2, (ratio - allow) * 70)), -30, 40);
       v.contact = Math.round(v.contact * 0.75); v.volume = Math.round(v.volume * 0.75); v.clip = Math.round(v.clip * 0.75); v.relight = Math.round(v.relight * 0.75);
@@ -595,7 +619,8 @@ function guardContrast(src, v, depth, profId) {
 function newVariation() { variation = { seed: Math.random() * 1e9 | 0, angle: Math.random() * Math.PI }; }
 function applyAuto(jitter) {
   const s = analyze(srcImg);
-  const v = guardContrast(srcImg, buildSettings(s, profile, jitter, Math.random, srcDepth ? autoFocus(srcImg, srcDepth) : null, srcDepth ? autoLight(srcImg, srcDepth) : null), srcMaps(), profile);
+  if (srcParse) s.skin = srcParse._skin;      // the parsing model knows skin better than colour does
+  const v = finishSettings(srcImg, buildSettings(s, profile, jitter, Math.random, srcDepth ? autoFocus(srcImg, srcDepth) : null, srcDepth ? autoLight(srcImg, srcDepth) : null), srcMaps(), profile);
   setValues(v);
   autoNote = ` · авто (${PROFILES[profile].label.toLowerCase()}): шум ${s.noise.toFixed(1)}, резкость ${s.sharp.toFixed(1)}, яркие зоны ${(s.bright * 100).toFixed(1)}%, кожа ${(s.skin * 100).toFixed(0)}%, контраст к исходнику ×${v._ratio.toFixed(2)}`;
 }
@@ -648,7 +673,8 @@ async function batch(files) {
         const vr = jit ? { seed: Math.random() * 1e9 | 0, angle: Math.random() * Math.PI } : variation;
         const depth = dofEnabled ? await estimateDepth(cnv) : null;
         const maps = { depth, matte: matteOn ? await estimateMatte(cnv) : null, parse: parseOn ? await estimateParse(cnv) : null };
-        const p = guardContrast(cnv, buildSettings(analyze(cnv), profile, jit, Math.random, depth ? autoFocus(cnv, depth) : null, depth ? autoLight(cnv, depth) : null), maps, profile);
+        const st = analyze(cnv); if (maps.parse) st.skin = maps.parse._skin;
+        const p = finishSettings(cnv, buildSettings(st, profile, jit, Math.random, depth ? autoFocus(cnv, depth) : null, depth ? autoLight(cnv, depth) : null), maps, profile);
         const out = document.createElement('canvas');
         process(cnv, cnv.width, cnv.height, p, out, vr, maps);
         const blob = await toBlob(out, jpegQuality(p));
@@ -657,8 +683,8 @@ async function batch(files) {
         used.add(n);
         entries.push({ name: n + '.jpg', data: new Uint8Array(await blob.arrayBuffer()) });
         // show the last finished photo
-        view.width = out.width; view.height = out.height; vctx.drawImage(out, 0, 0);
-        $('drop').style.display = 'none'; view.style.display = 'block';
+        view.width = out.width; view.height = out.height; vctx.drawImage(out, 0, 0); sizeOverride = [out.width, out.height]; fitMode = true;
+        $('drop').style.display = 'none'; showStage();
       } catch (err) { failed.push(f.name); }
     }
     if (entries.length) download(makeZip(entries), 'photos_real.zip');
@@ -698,16 +724,21 @@ function schedule() { if (!srcImg || pending || busy) return; pending = true; re
 function render() {
   pending = false;
   const token = ++renderToken;
-  const k = Math.min(1, Math.sqrt(PREVIEW_MAX_PIXELS / (srcImg.width * srcImg.height)));
+  sizeOverride = null;
+  const cap = draft ? 4.5e5 : (!fitMode && zs > fitScale() * 1.25 ? 6e6 : PREVIEW_MAX_PIXELS);   // more pixels when zoomed in
+  const k = Math.min(1, Math.sqrt(cap / (srcImg.width * srcImg.height)));
   const w = Math.round(srcImg.width * k), h = Math.round(srcImg.height * k);
   const t0 = performance.now();
   if (showOriginal) {
     view.width = w; view.height = h; vctx.drawImage(srcImg, 0, 0, w, h);
     $('status').textContent = 'Оригинал';
+    layoutView();
     return;
   }
   const p = params();
   process(srcImg, w, h, p, view, variation, srcMaps());
+  if (splitOn) drawOrig();
+  layoutView();
   $('status').textContent = `${srcImg.width}×${srcImg.height}` + (k < 1 ? ` · предпросмотр ${w}×${h}` : '') + ` · ${Math.round(performance.now() - t0)} мс` + autoNote;
   if (p.jpeg > 0) {       // show real compression artifacts: encode and decode the preview
     view.toBlob(async b => {
@@ -770,9 +801,61 @@ function blurData(srcCanvas, w, h, r) {
   return x.getImageData(0, 0, w, h).data;
 }
 
+// per-camera colour response: 3x3 matrix in linear light (rows sum to 1) plus shadow / highlight tint
+const LOOKS = {
+  phone:   { m: [1.10, -0.06, -0.04, -0.05, 1.10, -0.05, -0.03, -0.09, 1.12], sh: [0, 0, 0.02],        hl: [0, 0, 0] },
+  dslr:    { m: [1.03, -0.02, -0.01, -0.01, 1.02, -0.01, 0, -0.03, 1.03],     sh: [0, 0, 0],           hl: [0.01, 0, -0.01] },
+  film:    { m: [1.04, 0.03, -0.07, -0.02, 1.03, -0.01, -0.03, 0.09, 0.94],   sh: [-0.03, 0.02, 0.03], hl: [0.03, 0.005, -0.05] },
+  compact: { m: [1.12, -0.07, -0.05, -0.05, 1.08, -0.03, -0.02, -0.08, 1.10], sh: [-0.01, 0.02, 0],    hl: [0, 0.01, -0.02] },
+};
+const ENC = new Uint8Array(4097);
+for (let i = 0; i <= 4096; i++) ENC[i] = Math.round(Math.pow(i / 4096, 1 / 2.2) * 255);
+
+// lens-like blur: a hard-edged disc averaged in linear light, with bright points weighted up so they
+// open into glowing circles. Done at reduced resolution (disc radius ~3 px there), then upscaled.
+// The layer's alpha is the blur amount, so sharp subject pixels contribute nothing.
+function discBlur(layer, w, h, R, boost) {
+  if (R < 0.7) return blurData(layer, w, h, Math.max(0.1, R));
+  const f = Math.max(1, R / 3), sw = Math.max(1, Math.round(w / f)), sh = Math.max(1, Math.round(h / f)), r = R * sw / w;
+  const sc = newCanvas(sw, sh), sx = sc.getContext('2d', { willReadFrequently: true });
+  sx.imageSmoothingQuality = 'high'; sx.drawImage(layer, 0, 0, sw, sh);
+  const im = sx.getImageData(0, 0, sw, sh), s = im.data, n = sw * sh;
+  const pr = new Float32Array(n), pg = new Float32Array(n), pb = new Float32Array(n), pa = new Float32Array(n), bk = boost / 100 * 5;
+  for (let j = 0, i = 0; j < n; j++, i += 4) {
+    const lr = LIN[s[i]], lg = LIN[s[i + 1]], lb = LIN[s[i + 2]], lum = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    const wt = s[i + 3] / 255 * (lum > 0.55 ? 1 + bk * (lum - 0.55) / 0.45 : 1);
+    pr[j] = lr * wt; pg[j] = lg * wt; pb[j] = lb * wt; pa[j] = wt;
+  }
+  const taps = [], rc = Math.ceil(r + 0.5);
+  for (let dy = -rc; dy <= rc; dy++) for (let dx = -rc; dx <= rc; dx++) {
+    const k = clamp(r + 0.5 - Math.sqrt(dx * dx + dy * dy), 0, 1); if (k > 0) taps.push(dx, dy, k);
+  }
+  const o = new Uint8ClampedArray(n * 4);
+  for (let y = 0, j = 0; y < sh; y++) for (let x = 0; x < sw; x++, j++) {
+    let ar = 0, ag = 0, ab = 0, aa = 0;
+    for (let t = 0; t < taps.length; t += 3) {
+      let xx = x + taps[t], yy = y + taps[t + 1];
+      xx = xx < 0 ? 0 : xx >= sw ? sw - 1 : xx; yy = yy < 0 ? 0 : yy >= sh ? sh - 1 : yy;
+      const q = yy * sw + xx, k = taps[t + 2];
+      ar += pr[q] * k; ag += pg[q] * k; ab += pb[q] * k; aa += pa[q] * k;
+    }
+    const i = j * 4;
+    if (aa > 1e-4) {
+      const vr = ar / aa, vg = ag / aa, vb = ab / aa;
+      o[i] = ENC[vr >= 1 ? 4096 : vr * 4096 | 0]; o[i + 1] = ENC[vg >= 1 ? 4096 : vg * 4096 | 0]; o[i + 2] = ENC[vb >= 1 ? 4096 : vb * 4096 | 0];
+    } else { o[i] = s[i]; o[i + 1] = s[i + 1]; o[i + 2] = s[i + 2]; }
+    o[i + 3] = 255;
+  }
+  sx.putImageData(new ImageData(o, sw, sh), 0, 0);
+  const sm = newCanvas(sw, sh), smx = sm.getContext('2d');     // soften the stair-stepped disc edges before upscaling
+  smx.drawImage(sc, 0, 0); smx.filter = 'blur(0.7px)'; smx.drawImage(sc, 0, 0);
+  return upscaleMap(sm, w, h);
+}
+
 function process(src, w, h, p, outCanvas, vary, maps) {
   const depth = maps && maps.depth, parse = maps && maps.parse;
-  const matte = maps && maps.matte && maps.matte._cover > 0.03 ? maps.matte : null;   // ignore when no person was found
+  // ignore the matte when no person was found (the parsing model, if on, has the final say)
+  const matte = maps && maps.matte && maps.matte._cover > 0.03 && (!parse || parse._skin + parse._hair > 0.01) ? maps.matte : null;
   vary = vary || { seed: 0, angle: 0.45 };
   const scale = w / 912;   // effects were tuned on a 912px-wide image
   const cx = (w - 1) / 2, cy = (h - 1) / 2;
@@ -827,7 +910,7 @@ function process(src, w, h, p, outCanvas, vary, maps) {
       amt[j] = c; ld[i] = o[i]; ld[i + 1] = o[i + 1]; ld[i + 2] = o[i + 2]; ld[i + 3] = 6 + c * 249;
     }
     lx.putImageData(li, 0, 0);
-    const levels = [blurData(lc, w, h, R / 3), blurData(lc, w, h, R * 2 / 3), blurData(lc, w, h, R)];
+    const levels = [discBlur(lc, w, h, R / 3, p.bokeh), discBlur(lc, w, h, R * 2 / 3, p.bokeh), discBlur(lc, w, h, R, p.bokeh)];
     for (let i = 0, j = 0; i < o.length; i += 4, j++) {
       const c = amt[j]; if (c <= 0) continue;
       let t = c * 3, lv = t | 0; if (lv > 2) lv = 2;
@@ -969,6 +1052,10 @@ function process(src, w, h, p, outCanvas, vary, maps) {
   const next = () => { seed = Math.imul(seed, 1664525) + 1013904223 | 0; return seed >>> 16; };
   for (let i = 0; i < field.length; i++) field[i] = GAUSS[next()];
   const gNorm = gs > 1 ? 1.5 : 1;
+  const cw = (w >> 1) + 3, chh = (h >> 1) + 3;
+  const fieldR = new Float32Array(p.cgrain > 0 ? cw * chh : 0), fieldB = new Float32Array(fieldR.length);
+  for (let i = 0; i < fieldR.length; i++) { fieldR[i] = GAUSS[next()]; fieldB[i] = GAUSS[next()]; }
+  const look = LOOKS[p._look], lookK = look ? (p.look || 0) / 100 : 0, LM = look ? look.m : null;
 
   const bloomK = p.bloom / 100 * 1.07 / 255;
   const haze = p.haze / 100 * 0.25, hazeAdd = p.haze / 100 * 0.1;
@@ -976,7 +1063,7 @@ function process(src, w, h, p, outCanvas, vary, maps) {
   const gAmt = p.grain / 1000 * gNorm, cAmt = p.cgrain / 1000;
   const expGain = Math.pow(2, p.exp / 50);
   const warmR = 1 + p.warm / 50 * 0.12, warmB = 1 - p.warm / 50 * 0.12;
-  const con = p.contrast / 100, sat = 1 + p.sat / 100, fade = p.fade / 100;
+  const con = p.contrast / 100, sat = p._mono ? 0 : 1 + p.sat / 100, fade = p.fade / 100;
   const relK = p.relight / 100 * 0.9;
   const shK = p.shadows / 100 * 0.7, ctK = p.contact / 100 * 2.5, volK = p.volume / 100 * 2.0, tintK = p.stint / 50 * 0.15;
   const skinK = p.skin / 100 * 0.11, texStep = 1 / Math.max(1, scale * 0.85);
@@ -1034,6 +1121,13 @@ function process(src, w, h, p, outCanvas, vary, maps) {
         const v = 1 - vig * Math.pow(q, 1.3); r *= v; g *= v; b *= v;
       }
       r *= expGain * warmR; g *= expGain; b *= expGain * warmB;
+      if (lookK > 0) {
+        const r2 = LM[0] * r + LM[1] * g + LM[2] * b, g2 = LM[3] * r + LM[4] * g + LM[5] * b, b2 = LM[6] * r + LM[7] * g + LM[8] * b;
+        r += (r2 - r) * lookK; g += (g2 - g) * lookK; b += (b2 - b) * lookK;
+        if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
+        let hi = Math.sqrt(0.2126 * r + 0.7152 * g + 0.0722 * b); if (hi > 1) hi = 1; const lo = (1 - hi) * (1 - hi);
+        r *= 1 + lookK * (look.sh[0] * lo + look.hl[0] * hi); g *= 1 + lookK * (look.sh[1] * lo + look.hl[1] * hi); b *= 1 + lookK * (look.sh[2] * lo + look.hl[2] * hi);
+      }
 
       if (gAmt > 0 || cAmt > 0) {
         let n = 0;
@@ -1041,9 +1135,19 @@ function process(src, w, h, p, outCanvas, vary, maps) {
           const gx = x / gs, gx0 = gx | 0, gfx = gx - gx0, j = gy0 * gw + gx0;
           n = ((field[j] * (1 - gfx) + field[j + 1] * gfx) * (1 - gfy) + (field[j + gw] * (1 - gfx) + field[j + gw + 1] * gfx) * gfy) * gAmt;
         }
-        r += Math.sqrt(r + 0.002) * (n + cAmt * GAUSS[next()]);
-        g += Math.sqrt(g + 0.002) * (n + cAmt * GAUSS[next()]);
-        b += Math.sqrt(b + 0.002) * (n + cAmt * GAUSS[next()]);
+        // colour noise as a Bayer sensor makes it: red and blue are sampled on a half-resolution grid and
+        // interpolated, so their noise comes in soft 2-pixel blotches; green is sampled twice as densely
+        let nr = 0, ng = 0, nb = 0;
+        if (cAmt > 0) {
+          const ux = x * 0.5, ux0 = ux | 0, ufx = ux - ux0, uy = y * 0.5, uy0 = uy | 0, ufy = uy - uy0, q = uy0 * cw + ux0;
+          nr = ((fieldR[q] * (1 - ufx) + fieldR[q + 1] * ufx) * (1 - ufy) + (fieldR[q + cw] * (1 - ufx) + fieldR[q + cw + 1] * ufx) * ufy) * cAmt * 1.6;
+          const vx = (x + 1) * 0.5, vx0 = vx | 0, vfx = vx - vx0, vy = (y + 1) * 0.5, vy0 = vy | 0, vfy = vy - vy0, q2 = vy0 * cw + vx0;
+          nb = ((fieldB[q2] * (1 - vfx) + fieldB[q2 + 1] * vfx) * (1 - vfy) + (fieldB[q2 + cw] * (1 - vfx) + fieldB[q2 + cw + 1] * vfx) * vfy) * cAmt * 1.6;
+          ng = cAmt * 0.7 * GAUSS[next()];
+        }
+        r += Math.sqrt(r + 0.002) * (n + nr);
+        g += Math.sqrt(g + 0.002) * (n + ng);
+        b += Math.sqrt(b + 0.002) * (n + nb);
       }
 
       // sensor saturation: each channel clips on its own, which shifts colour near blown areas
@@ -1082,6 +1186,151 @@ function process(src, w, h, p, outCanvas, vary, maps) {
     octx.putImageData(img, 0, 0);
   }
 }
+// ---------- viewer: zoom, pan, before/after curtain ----------
+const stage = $('stage'), origC = $('orig'), splitter = $('splitter');
+let zs = 1, tx = 0, ty = 0, fitMode = true, splitOn = false, split = 0.5, dragMoved = false, sizeOverride = null;
+let draft = false, draftT = 0, hiT = 0, drag = null;
+function showStage() { stage.style.display = 'block'; $('viewbar').style.display = 'flex'; layoutView(); }
+const imgSize = () => sizeOverride || (srcImg ? [srcImg.width, srcImg.height] : [view.width || 1, view.height || 1]);
+const fitScale = () => { const [iw, ih] = imgSize(); return Math.min(stage.clientWidth / iw, stage.clientHeight / ih) || 1; };
+function layoutView() {
+  if (!view.width || !stage.clientWidth) return;
+  const [iw, ih] = imgSize();
+  if (fitMode) { zs = fitScale(); tx = (stage.clientWidth - iw * zs) / 2; ty = (stage.clientHeight - ih * zs) / 2; }
+  view.style.transform = `translate(${tx}px,${ty}px) scale(${zs * iw / view.width})`;
+  const on = splitOn && !!srcImg && !sizeOverride && origC.width > 0;
+  origC.style.display = splitter.style.display = on ? 'block' : 'none';
+  if (on) {
+    origC.style.transform = `translate(${tx}px,${ty}px) scale(${zs * iw / origC.width})`;
+    origC.style.clipPath = `inset(0 ${(1 - split) * 100}% 0 0)`;
+    splitter.style.left = (tx + iw * zs * split - 1) + 'px';
+  }
+  $('zoomOut').textContent = Math.round(zs * 100) + '%';
+}
+function drawOrig() { origC.width = view.width; origC.height = view.height; origC.getContext('2d').drawImage(srcImg, 0, 0, origC.width, origC.height); }
+function setZoom(nz, mx, my) {
+  nz = clamp(nz, fitScale() * 0.5, 8);
+  tx = mx - (mx - tx) * nz / zs; ty = my - (my - ty) * nz / zs; zs = nz; fitMode = false;
+  layoutView(); clearTimeout(hiT); hiT = setTimeout(schedule, 180);     // re-render sharper once zooming settles
+}
+stage.addEventListener('wheel', e => {
+  e.preventDefault(); const r = stage.getBoundingClientRect();
+  setZoom(zs * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+stage.addEventListener('pointerdown', e => {
+  drag = e.target === splitter ? { split: true } : { x: e.clientX, y: e.clientY, tx, ty };
+  dragMoved = false; stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener('pointermove', e => {
+  if (!drag) return;
+  if (drag.split) {
+    const r = stage.getBoundingClientRect(), iw = imgSize()[0];
+    split = clamp((e.clientX - r.left - tx) / (iw * zs), 0, 1); dragMoved = true; layoutView(); return;
+  }
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) dragMoved = true;
+  if (dragMoved && !fitMode) { tx = drag.tx + dx; ty = drag.ty + dy; layoutView(); }
+});
+stage.addEventListener('pointerup', e => { const was = drag; drag = null; if (was && !was.split && !dragMoved) focusClick(e); });
+stage.addEventListener('pointercancel', () => { drag = null; });
+window.addEventListener('resize', layoutView);
+$('fitBtn').onclick = () => { fitMode = true; layoutView(); schedule(); };
+$('z100').onclick = () => setZoom(1, stage.clientWidth / 2, stage.clientHeight / 2);
+$('splitBtn').onclick = () => {
+  splitOn = !splitOn; $('splitBtn').classList.toggle('on', splitOn);
+  if (splitOn && srcImg && view.width) drawOrig();
+  layoutView();
+};
+function draftSchedule() {      // quick low-res render while a slider moves, full quality once it stops
+  draft = true; schedule(); clearTimeout(draftT);
+  draftT = setTimeout(() => { draft = false; schedule(); }, 230);
+}
+
+// ---------- reference photo matching ----------
+let refStats = null;
+function colorStats(src) {
+  const sw = 320, sh = Math.max(1, Math.round(320 * src.height / src.width));
+  const c = newCanvas(sw, sh), x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0, sw, sh);
+  const d = x.getImageData(0, 0, sw, sh).data, n = sw * sh, hist = new Uint32Array(256);
+  let a = 0, a2 = 0, sr = 0, sb = 0, sat = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2], l = 0.299 * r + 0.587 * g + 0.114 * b;
+    a += l; a2 += l * l; hist[l | 0]++; sr += r; sb += b;
+    const mx = Math.max(r, g, b); if (mx > 40) sat += (mx - Math.min(r, g, b)) / mx;
+  }
+  const m = a / n; let acc = 0, p50 = 0;
+  for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= 0.5 * n) { p50 = k; break; } }
+  return { std: Math.sqrt(a2 / n - m * m), p50, sat: sat / n, rb: Math.log2((sr + 1) / (sb + 1)) };
+}
+// pulls grain, detail, contrast, brightness, saturation and warmth most of the way toward the reference
+function matchReference(src, v, maps) {
+  const an = analyze(src), cur = colorStats(src), R = refStats, B = 0.75;
+  const tgt = { std: cur.std + B * (R.std - cur.std), p50: cur.p50 + B * (R.p50 - cur.p50), sat: cur.sat + B * (R.sat - cur.sat), rb: cur.rb + B * (R.rb - cur.rb) };
+  const e = grainExisting(an), g = Math.sqrt(Math.max(0, R.grain * R.grain - e * e));
+  v.grain = clamp(Math.round(g), 0, 80); v.cgrain = clamp(Math.round(g * 0.4), 0, 40);
+  const dc = an.sharp - 2.5 * an.noise, dr = R.sharp - 2.5 * R.noise;
+  if (dc > dr) { v.soft = clamp(Math.round((dc - dr) * 6), 0, 70); v.sharpen = 0; } else { v.soft = 0; v.sharpen = clamp(Math.round((dr - dc) * 4), 0, 40); }
+  const sw = 320, sh = Math.max(1, Math.round(320 * src.height / src.width)), out = newCanvas(sw, sh);
+  let o = cur;
+  for (let it = 0; it < 6; it++) {
+    process(src, sw, sh, { ...v, grain: 0, cgrain: 0, jpeg: 0, sharpen: 0 }, out, variation, maps);
+    o = colorStats(out);
+    v.contrast = clamp(Math.round(v.contrast + clamp((tgt.std / o.std - 1) * 60, -8, 8)), -30, 40);
+    v.exp = clamp(Math.round(v.exp + clamp(Math.log2((tgt.p50 + 4) / (o.p50 + 4)) * 25, -10, 10)), -40, 40);
+    v.sat = clamp(Math.round(v.sat + clamp((tgt.sat - o.sat) * 120, -8, 8)), -35, 35);
+    v.warm = clamp(Math.round(v.warm + clamp((tgt.rb - o.rb) * 30, -8, 8)), -35, 35);
+  }
+  v._ratio = o.std / cur.std;
+  return v;
+}
+const finishSettings = (src, v, maps, profId) => refStats ? matchReference(src, v, maps) : guardContrast(src, v, maps, profId);
+$('refBtn').onclick = () => {
+  if (refStats) { refStats = null; $('refBtn').textContent = 'Подогнать под эталонное фото…'; if (srcImg) applyAuto(false); return; }
+  $('refFile').click();
+};
+$('refFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const c = toCanvas(await createImageBitmap(f)), an = analyze(c);
+    refStats = { ...colorStats(c), noise: an.noise, sharp: an.sharp, grain: grainExisting(an) };
+    $('refBtn').textContent = `Эталон: ${f.name.slice(0, 22)} ✕`;
+    if (srcImg) applyAuto(false);
+  } catch (err) { $('status').textContent = 'Не удалось открыть эталон: ' + err.message; }
+};
+
+// ---------- remembered state and user presets ----------
+function saveState() {
+  try { localStorage.setItem('fr_state', JSON.stringify({ profile, strength: +$('strength').value, jitter: $('jitter').checked, ai: { d: dofEnabled, m: matteOn, p: parseOn } })); } catch (e) {}
+}
+function userPresets() { try { return JSON.parse(localStorage.getItem('fr_presets') || '{}') || {}; } catch (e) { return {}; } }
+function renderUserPresets() {
+  const boxp = $('userPresets'), all = userPresets(); boxp.textContent = '';
+  for (const name of Object.keys(all)) {
+    const b = document.createElement('button'); b.textContent = name; b.title = 'Применить набор';
+    b.onclick = () => { autoNote = ''; setValues(all[name]); };
+    const x = document.createElement('span'); x.textContent = '✕'; x.className = 'del'; x.title = 'Удалить набор';
+    x.onclick = ev => { ev.stopPropagation(); const cur = userPresets(); delete cur[name]; try { localStorage.setItem('fr_presets', JSON.stringify(cur)); } catch (e) {} renderUserPresets(); };
+    b.append(x); boxp.append(b);
+  }
+}
+$('savePreset').onclick = () => {
+  const name = (window.prompt('Название набора настроек:') || '').trim(); if (!name) return;
+  const cur = userPresets(), vals = params(); delete vals._look; delete vals._mono; cur[name.slice(0, 30)] = vals;
+  try { localStorage.setItem('fr_presets', JSON.stringify(cur)); } catch (e) { $('status').textContent = 'Браузер не разрешил сохранить набор'; }
+  renderUserPresets();
+};
+$('allAi').onclick = async () => { for (const id of ['dofBtn', 'matteBtn', 'parseBtn']) if (!$(id).disabled) await $(id).onclick(); };
+$('jitter').addEventListener('change', saveState);
+$('strength').addEventListener('change', saveState);
+(async function restore() {
+  renderUserPresets();
+  let st = null; try { st = JSON.parse(localStorage.getItem('fr_state') || 'null'); } catch (e) {}
+  if (!st) return;
+  if (PROFILES[st.profile]) { profile = st.profile; for (const o of chipBox.children) o.classList.toggle('on', o.dataset.id === profile); }
+  if (st.strength != null) { $('strength').value = st.strength; $('strengthOut').textContent = $('strength').value + '%'; }
+  if (st.jitter != null) $('jitter').checked = !!st.jitter;
+  if (st.ai) { if (st.ai.d) await $('dofBtn').onclick(); if (st.ai.m) await $('matteBtn').onclick(); if (st.ai.p) await $('parseBtn').onclick(); }
+})();
 </script>
 </body>
 </html>
