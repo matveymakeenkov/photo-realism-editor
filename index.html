@@ -9,7 +9,7 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--text); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; display: flex; }
-  aside { width: 320px; flex: none; background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 16px; }
+  aside { width: 330px; flex: none; background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 16px; }
   main { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 16px; position: relative; }
   h1 { font-size: 16px; margin: 0 0 12px; }
   h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 18px 0 6px; font-weight: 600; }
@@ -24,11 +24,16 @@
   button.primary:hover { filter: brightness(1.08); }
   button:disabled { opacity: .45; cursor: default; }
   .wide { grid-column: 1 / -1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { padding: 5px 10px; border-radius: 999px; font-size: 13px; }
+  .chips button.on { background: var(--accent); color: #1b1408; border-color: var(--accent); font-weight: 600; }
+  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--dim); font-size: 13px; }
+  .check input { accent-color: var(--accent); }
   canvas { max-width: 100%; max-height: 100%; display: none; box-shadow: 0 4px 30px #000a; }
-  #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 48px 32px; text-align: center; color: var(--dim); max-width: 420px; }
+  #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 48px 32px; text-align: center; color: var(--dim); max-width: 440px; }
   #drop b { color: var(--text); display: block; font-size: 16px; margin-bottom: 6px; }
   main.over #drop, main.over canvas { outline: 2px solid var(--accent); outline-offset: 6px; }
-  #status { position: absolute; left: 16px; bottom: 10px; color: var(--dim); font-size: 12px; }
+  #status { position: absolute; left: 16px; right: 16px; bottom: 10px; color: var(--dim); font-size: 12px; }
   .hint { color: var(--dim); font-size: 12px; margin-top: 14px; }
   @media (max-width: 720px) { body { flex-direction: column-reverse; } aside { width: 100%; max-height: 50%; border-right: 0; border-top: 1px solid var(--line); } }
 </style>
@@ -37,21 +42,27 @@
 <aside>
   <h1>Фото-реализм</h1>
   <div class="btns">
-    <button id="open" class="wide">Открыть фото…</button>
-    <button id="auto" class="wide" disabled title="Подобрать настройки под это фото">✨ Авто</button>
+    <button id="open" class="wide">Открыть фото (одно или несколько)…</button>
+  </div>
+  <h2>Камера</h2>
+  <div class="chips" id="profiles"></div>
+  <div class="btns">
+    <button id="auto" disabled title="Подобрать настройки под это фото с учётом выбранной камеры">✨ Авто</button>
+    <button id="vary" disabled title="Те же настройки с небольшим случайным разбросом">🎲 Вариация</button>
     <button id="compare" disabled title="Удерживайте, чтобы увидеть оригинал">Оригинал (держать)</button>
     <button id="save" class="primary" disabled>Сохранить JPG</button>
   </div>
-  <input type="file" id="file" accept="image/*" hidden>
+  <label class="check"><input type="checkbox" id="jitter" checked> Случайный разброс в пакетной обработке</label>
+  <input type="file" id="file" accept="image/*" multiple hidden>
   <div id="controls"></div>
   <div class="btns">
     <button id="preset">Как в примере</button>
     <button id="reset">Сбросить всё</button>
   </div>
-  <p class="hint">Фото можно перетащить в окно или вставить через Ctrl+V. Всё обрабатывается на вашем компьютере, файл никуда не отправляется.</p>
+  <p class="hint">Одно фото открывается для ручной настройки. Несколько фото сразу обрабатываются в режиме «Авто» с выбранной камерой и скачиваются одним ZIP-архивом. Всё происходит на вашем компьютере, файлы никуда не отправляются.</p>
 </aside>
 <main id="main">
-  <div id="drop"><b>Перетащите фото сюда</b>или нажмите «Открыть фото…»</div>
+  <div id="drop"><b>Перетащите фото сюда</b>одно — для настройки, несколько — для пакетной обработки</div>
   <canvas id="view"></canvas>
   <div id="status"></div>
 </main>
@@ -61,10 +72,16 @@
 const CONTROLS = [
   ['Оптика'],
   ['soft',    'Мягкость оптики',        0, 100, 1, 45, 0],
+  ['edgeSoft','Мягкость к краям',       0, 100, 1, 0, 0],
+  ['distort', 'Бочкообразная дисторсия', 0, 50, 1, 0, 0],
   ['ca',      'Хроматическая аберрация', 0, 50, 1, 12, 0],
   ['vig',     'Виньетка',               0, 60, 1, 13, 0],
+  ['shake',   'Микросмаз от руки',      0, 100, 1, 0, 0],
   ['Свет'],
   ['bloom',   'Засветка от ярких зон',  0, 100, 1, 30, 0],
+  ['flare',   'Блики от источника света', 0, 100, 1, 0, 0],
+  ['clip',    'Жёсткий пересвет',       0, 100, 1, 0, 0],
+  ['fringe',  'Фиолетовая кайма',       0, 100, 1, 0, 0],
   ['haze',    'Дымка (контровой свет)', 0, 30, 1, 2, 0],
   ['exp',     'Экспозиция',           -100, 100, 1, 0, 0],
   ['Тени'],
@@ -72,6 +89,10 @@ const CONTROLS = [
   ['contact', 'Контактные тени',        0, 100, 1, 0, 0],
   ['volume',  'Объём',                  0, 100, 1, 0, 0],
   ['stint',   'Оттенок теней (тёпл ↔ холод)', -50, 50, 1, 0, 0],
+  ['Кожа и детали'],
+  ['skin',    'Текстура кожи',          0, 100, 1, 0, 0],
+  ['nr',      'Шумодав (как в телефоне)', 0, 100, 1, 0, 0],
+  ['sharpen', 'Перешарп с ореолами',    0, 100, 1, 0, 0],
   ['Зерно'],
   ['grain',   'Зерно',                  0, 80, 1, 20, 0],
   ['cgrain',  'Цветной шум',            0, 40, 1, 8, 0],
@@ -81,14 +102,37 @@ const CONTROLS = [
   ['sat',     'Насыщенность',         -50, 50, 1, 4, 0],
   ['warm',    'Теплота',              -50, 50, 1, 0, 0],
   ['fade',    'Блёклые чёрные',         0, 15, 0.5, 0.5, 0],
+  ['Сжатие'],
+  ['jpeg',    'Следы JPEG-сжатия',      0, 100, 1, 0, 0],
 ];
+const SPEC = Object.fromEntries(CONTROLS.filter(c => c.length > 1).map(c => [c[0], c]));
+
+// Camera characters. "set" overrides the auto value, "mul" scales it, "add" offsets it.
+const PROFILES = {
+  none:    { label: 'Без профиля', set: {}, mul: {}, add: {} },
+  phone:   { label: 'Смартфон',
+             set: { sharpen: 55, nr: 45, gsize: 1, edgeSoft: 10, distort: 6, fringe: 15, clip: 45, jpeg: 25, ca: 4, vig: 6, fade: 0, shake: 0 },
+             mul: { grain: 0.35, cgrain: 0.3, soft: 0.4, bloom: 0.7 }, add: { sat: 8, contrast: 6, shadows: -8 } },
+  dslr:    { label: 'Зеркалка',
+             set: { sharpen: 8, nr: 0, edgeSoft: 25, distort: 3, fringe: 10, clip: 20, jpeg: 0, ca: 10, vig: 16, shake: 0 },
+             mul: { grain: 0.6, cgrain: 0.5 }, add: {} },
+  film:    { label: 'Плёнка',
+             set: { sharpen: 0, nr: 0, gsize: 2, edgeSoft: 20, distort: 2, fringe: 0, clip: 0, jpeg: 0, ca: 6, vig: 20, fade: 5, stint: -6, shake: 0 },
+             mul: { grain: 1.9, cgrain: 0.6, soft: 1.2, bloom: 1.5 }, add: { warm: 8, sat: -6, contrast: -2 } },
+  compact: { label: 'Старая мыльница',
+             set: { sharpen: 35, nr: 25, gsize: 1.5, edgeSoft: 40, distort: 10, fringe: 45, clip: 70, jpeg: 45, ca: 22, vig: 25, fade: 1, shake: 25 },
+             mul: { grain: 1.3, cgrain: 2.2, soft: 1.1 }, add: { sat: 6, contrast: 8 } },
+};
 
 const $ = id => document.getElementById(id);
 const view = $('view'), vctx = view.getContext('2d');
 const inputs = {};
 let srcImg = null;      // full-size source canvas
-let pending = false, showOriginal = false, fileName = 'photo';
+let pending = false, showOriginal = false, fileName = 'photo', busy = false;
+let profile = 'none', autoNote = '', renderToken = 0;
+let variation = { seed: 0, angle: 0.45 };
 const PREVIEW_MAX_PIXELS = 1.8e6;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
 // ---------- UI ----------
 const box = $('controls');
@@ -104,20 +148,38 @@ for (const c of CONTROLS) {
   inp._upd = upd; upd();
   inputs[name] = inp; box.append(row);
 }
-function setAll(idx) { for (const c of CONTROLS) if (c.length > 1) { inputs[c[0]].value = c[idx]; inputs[c[0]]._upd(); } schedule(); }
+function setValues(v) { for (const k in v) if (inputs[k]) { inputs[k].value = v[k]; inputs[k]._upd(); } schedule(); }
+function setAll(idx) { autoNote = ''; setValues(Object.fromEntries(Object.values(SPEC).map(c => [c[0], c[idx]]))); }
 $('preset').onclick = () => setAll(5);
 $('reset').onclick = () => setAll(6);
 const params = () => Object.fromEntries(Object.entries(inputs).map(([k, v]) => [k, +v.value]));
 
+const chipBox = $('profiles');
+for (const [id, pr] of Object.entries(PROFILES)) {
+  const b = document.createElement('button'); b.textContent = pr.label; b.dataset.id = id;
+  if (id === profile) b.className = 'on';
+  b.onclick = () => {
+    profile = id;
+    for (const o of chipBox.children) o.classList.toggle('on', o === b);
+    if (srcImg) applyAuto(false);
+  };
+  chipBox.append(b);
+}
+
 // ---------- loading ----------
 $('open').onclick = () => $('file').click();
-$('file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+$('file').onchange = e => { handleFiles([...e.target.files]); e.target.value = ''; };
 const main = $('main');
 main.addEventListener('dragover', e => { e.preventDefault(); main.classList.add('over'); });
 main.addEventListener('dragleave', () => main.classList.remove('over'));
-main.addEventListener('drop', e => { e.preventDefault(); main.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
-window.addEventListener('paste', e => { for (const it of e.clipboardData.items) if (it.type.startsWith('image/')) return loadFile(it.getAsFile()); });
+main.addEventListener('drop', e => { e.preventDefault(); main.classList.remove('over'); handleFiles([...e.dataTransfer.files]); });
+window.addEventListener('paste', e => { for (const it of e.clipboardData.items) if (it.type.startsWith('image/')) return handleFiles([it.getAsFile()]); });
 
+function handleFiles(files) {
+  files = files.filter(f => f && (f.type.startsWith('image/') || /\.(jpe?g|png|webp|avif|bmp|gif)$/i.test(f.name || '')));
+  if (!files.length || busy) return;
+  if (files.length === 1) loadFile(files[0]); else batch(files);
+}
 async function loadFile(file) {
   try {
     const bmp = await createImageBitmap(file);
@@ -125,33 +187,35 @@ async function loadFile(file) {
     loadImage(bmp);
   } catch (err) { $('status').textContent = 'Не удалось открыть файл: ' + err.message; }
 }
+function toCanvas(img) {
+  const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+  c.getContext('2d').drawImage(img, 0, 0); return c;
+}
 function loadImage(img) {
-  srcImg = document.createElement('canvas');
-  srcImg.width = img.width; srcImg.height = img.height;
-  srcImg.getContext('2d').drawImage(img, 0, 0);
+  srcImg = toCanvas(img);
   $('drop').style.display = 'none'; view.style.display = 'block';
-  $('save').disabled = $('compare').disabled = $('auto').disabled = false;
+  for (const id of ['save', 'compare', 'auto', 'vary']) $(id).disabled = false;
   autoNote = '';
   schedule();
 }
 window.loadImage = loadImage;
 
 // ---------- auto mode ----------
-let autoNote = '';
-const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 function analyze(src) {
   // global stats on a small copy
   const sw = 256, sh = Math.max(1, Math.round(256 * src.height / src.width));
   const c = document.createElement('canvas'); c.width = sw; c.height = sh;
   const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0, sw, sh);
   const d = x.getImageData(0, 0, sw, sh).data, n = sw * sh;
-  const hist = new Uint32Array(256); let satSum = 0, bright = 0;
+  const hist = new Uint32Array(256); let satSum = 0, bright = 0, hot = 0, skin = 0;
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i], g = d[i + 1], b = d[i + 2];
     const l = 0.299 * r + 0.587 * g + 0.114 * b; hist[l | 0]++;
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     if (mx > 40) satSum += (mx - mn) / mx;
     if (l > 225) bright++;
+    if (l > 238) hot++;
+    skin += skinMask(r, g, b);
   }
   const pct = q => { let s = 0; for (let i = 0; i < 256; i++) { s += hist[i]; if (s >= q * n) return i / 255; } return 1; };
   // fine detail on a full-resolution centre crop: noise level and sharpness
@@ -169,33 +233,55 @@ function analyze(src) {
     lh[Math.min(511, v * 4 | 0)]++; cnt++;
   }
   const lp = q => { let s = 0; for (let i = 0; i < 512; i++) { s += lh[i]; if (s >= q * cnt) return i / 4; } return 128; };
-  return { p2: pct(0.02), p50: pct(0.5), p98: pct(0.98), sat: satSum / n, bright: bright / n, noise: lp(0.5), sharp: lp(0.9), width: src.width };
+  return { p2: pct(0.02), p50: pct(0.5), p98: pct(0.98), sat: satSum / n, bright: bright / n, hot: hot / n, skin: skin / n,
+           noise: lp(0.5), sharp: lp(0.9), width: src.width };
 }
+window._analyze = analyze;
+
 function autoSettings(s) {
-  const v = {};
+  const v = Object.fromEntries(Object.values(SPEC).map(c => [c[0], c[6]]));
   const range = s.p98 - s.p2;
-  v.contrast = Math.round(clamp(8 + (0.9 - range) * 70, 0, 30));
-  // nudge the midtones halfway toward a normal exposure, never a full correction
-  v.exp = Math.round(clamp(50 * Math.log2(Math.pow(0.45, 2.2) / Math.max(Math.pow(s.p50, 2.2), 1e-4)) * 0.2, -15, 15));
-  v.sat = Math.round(clamp((0.36 - s.sat) * 60, -20, 10));
-  v.grain = Math.round(clamp(26 - (s.noise - 1.5) * 6, 0, 24));        // less if the photo is already noisy
-  v.cgrain = Math.round(v.grain * 0.4);
+  v.contrast = 8 + (0.9 - range) * 70;
+  // nudge the midtones part of the way toward a normal exposure, never a full correction
+  v.exp = clamp(50 * Math.log2(Math.pow(0.45, 2.2) / Math.max(Math.pow(s.p50, 2.2), 1e-4)) * 0.2, -15, 15);
+  v.sat = clamp((0.36 - s.sat) * 60, -20, 10);
+  v.grain = clamp(26 - (s.noise - 1.5) * 6, 0, 24);            // less if the photo is already noisy
+  v.cgrain = v.grain * 0.4;
   v.gsize = s.width < 1800 ? 1 : s.width < 3200 ? 1.5 : 2;
-  v.soft = Math.round(clamp((s.sharp - 2.5 * s.noise) * 5, 10, 60));           // soften only what is over-sharp
-  v.bloom = s.bright < 0.004 ? 0 : Math.round(clamp(12 + s.bright * 250, 12, 40));
+  v.soft = clamp((s.sharp - 2.5 * s.noise) * 5, 10, 60);       // soften only what is over-sharp
+  v.bloom = s.bright < 0.004 ? 0 : clamp(12 + s.bright * 250, 12, 40);
   v.haze = s.bright > 0.06 ? 2 : 0;
-  v.shadows = Math.round(clamp((s.p2 - 0.02) * 250, 0, 25));   // deepen only if blacks are weak
+  v.shadows = clamp((s.p2 - 0.02) * 250, 0, 25);               // deepen only if blacks are weak
   v.contact = 30; v.volume = 20; v.stint = 10;
-  v.ca = 10; v.vig = 12; v.warm = 0; v.fade = 0.5;
+  v.ca = 10; v.vig = 12; v.fade = 0.5;
+  v.skin = s.skin > 0.03 ? 45 : 0;                             // only when there is skin in the frame
+  v.clip = 15;
+  v.fringe = s.bright > 0.004 ? 12 : 0;
+  v.flare = s.hot > 0.002 ? 25 : 0;                            // only with a real light source in frame
+  v.edgeSoft = 15; v.distort = 2;
   return v;
 }
-$('auto').onclick = () => {
-  const s = analyze(srcImg), v = autoSettings(s);
-  for (const k in v) { inputs[k].value = v[k]; inputs[k]._upd(); }
-  autoNote = ` · авто: шум ${s.noise.toFixed(1)}, резкость ${s.sharp.toFixed(1)}, яркие зоны ${(s.bright * 100).toFixed(1)}%`;
-  schedule();
-};
-window._analyze = analyze;
+function buildSettings(stats, profId, jitter, rnd) {
+  const v = autoSettings(stats), pr = PROFILES[profId] || PROFILES.none;
+  for (const k in pr.mul) v[k] *= pr.mul[k];
+  for (const k in pr.add) v[k] += pr.add[k];
+  for (const k in pr.set) v[k] = pr.set[k];
+  if (pr.set.gsize && stats.width >= 3200) v.gsize = pr.set.gsize + 0.5;
+  for (const k in v) {
+    const [, , min, max, step] = SPEC[k];
+    if (jitter && k !== 'gsize') v[k] *= 1 + (rnd() - 0.5) * 0.26;
+    v[k] = clamp(Math.round(v[k] / step) * step, min, max);
+  }
+  return v;
+}
+function newVariation() { variation = { seed: Math.random() * 1e9 | 0, angle: Math.random() * Math.PI }; }
+function applyAuto(jitter) {
+  const s = analyze(srcImg);
+  setValues(buildSettings(s, profile, jitter, Math.random));
+  autoNote = ` · авто (${PROFILES[profile].label.toLowerCase()}): шум ${s.noise.toFixed(1)}, резкость ${s.sharp.toFixed(1)}, яркие зоны ${(s.bright * 100).toFixed(1)}%, кожа ${(s.skin * 100).toFixed(0)}%`;
+}
+$('auto').onclick = () => applyAuto(false);
+$('vary').onclick = () => { newVariation(); applyAuto(true); };
 
 // ---------- compare / save ----------
 const cmp = $('compare');
@@ -203,33 +289,102 @@ const setOrig = v => { if (srcImg && showOriginal !== v) { showOriginal = v; sch
 cmp.addEventListener('pointerdown', () => setOrig(true));
 for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) cmp.addEventListener(ev, () => setOrig(false));
 
+const jpegQuality = p => p.jpeg > 0 ? 0.88 - p.jpeg / 100 * 0.66 : 0.93;
+const toBlob = (canvas, q) => new Promise(res => canvas.toBlob(res, 'image/jpeg', q));
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
 $('save').onclick = () => {
   $('status').textContent = 'Сохраняю в полном размере…';
-  setTimeout(() => {
-    const out = document.createElement('canvas');
-    process(srcImg, srcImg.width, srcImg.height, params(), out);
-    out.toBlob(b => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(b); a.download = fileName + '_real.jpg'; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      $('status').textContent = `Сохранено: ${a.download} (${out.width}×${out.height})`;
-    }, 'image/jpeg', 0.93);
+  setTimeout(async () => {
+    const out = document.createElement('canvas'), p = params();
+    process(srcImg, srcImg.width, srcImg.height, p, out, variation);
+    download(await toBlob(out, jpegQuality(p)), fileName + '_real.jpg');
+    $('status').textContent = `Сохранено: ${fileName}_real.jpg (${out.width}×${out.height})`;
   }, 30);
 };
 
+// ---------- batch ----------
+async function batch(files) {
+  busy = true;
+  const entries = [], used = new Set(), failed = [];
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      $('status').textContent = `Пакетная обработка: ${i + 1} из ${files.length} — ${f.name}`;
+      await new Promise(r => setTimeout(r, 20));
+      try {
+        const cnv = toCanvas(await createImageBitmap(f));
+        const jit = $('jitter').checked;
+        const vr = jit ? { seed: Math.random() * 1e9 | 0, angle: Math.random() * Math.PI } : variation;
+        const p = buildSettings(analyze(cnv), profile, jit, Math.random);
+        const out = document.createElement('canvas');
+        process(cnv, cnv.width, cnv.height, p, out, vr);
+        const blob = await toBlob(out, jpegQuality(p));
+        let name = (f.name || 'photo').replace(/\.[^.]+$/, '') + '_real', n = name, k = 2;
+        while (used.has(n)) n = name + '_' + k++;
+        used.add(n);
+        entries.push({ name: n + '.jpg', data: new Uint8Array(await blob.arrayBuffer()) });
+        // show the last finished photo
+        view.width = out.width; view.height = out.height; vctx.drawImage(out, 0, 0);
+        $('drop').style.display = 'none'; view.style.display = 'block';
+      } catch (err) { failed.push(f.name); }
+    }
+    if (entries.length) download(makeZip(entries), 'photos_real.zip');
+    $('status').textContent = `Готово: обработано ${entries.length} из ${files.length}, архив photos_real.zip скачан` +
+      (failed.length ? ` · не удалось открыть: ${failed.join(', ')}` : '');
+  } finally { busy = false; }
+}
+window._batch = batch;
+
+// minimal ZIP writer (stored, no compression — JPEGs are already compressed)
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(entries) {
+  const enc = new TextEncoder(), parts = [], central = []; let offset = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name), crc = crc32(e.data), size = e.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true); lh.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(lh.buffer), name, e.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true); ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(new Uint8Array(ch.buffer), name);
+    offset += 30 + name.length + size;
+  }
+  const csize = central.reduce((s, a) => s + a.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+  end.setUint32(12, csize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+}
+
 // ---------- render loop ----------
-function schedule() { if (!srcImg || pending) return; pending = true; requestAnimationFrame(render); }
+function schedule() { if (!srcImg || pending || busy) return; pending = true; requestAnimationFrame(render); }
 function render() {
   pending = false;
+  const token = ++renderToken;
   const k = Math.min(1, Math.sqrt(PREVIEW_MAX_PIXELS / (srcImg.width * srcImg.height)));
   const w = Math.round(srcImg.width * k), h = Math.round(srcImg.height * k);
   const t0 = performance.now();
   if (showOriginal) {
     view.width = w; view.height = h; vctx.drawImage(srcImg, 0, 0, w, h);
     $('status').textContent = 'Оригинал';
-  } else {
-    process(srcImg, w, h, params(), view);
-    $('status').textContent = `${srcImg.width}×${srcImg.height}` + (k < 1 ? ` · предпросмотр ${w}×${h}` : '') + ` · ${Math.round(performance.now() - t0)} мс` + autoNote;
+    return;
+  }
+  const p = params();
+  process(srcImg, w, h, p, view, variation);
+  $('status').textContent = `${srcImg.width}×${srcImg.height}` + (k < 1 ? ` · предпросмотр ${w}×${h}` : '') + ` · ${Math.round(performance.now() - t0)} мс` + autoNote;
+  if (p.jpeg > 0) {       // show real compression artifacts: encode and decode the preview
+    view.toBlob(async b => {
+      const bmp = await createImageBitmap(b);
+      if (token === renderToken && !showOriginal) vctx.drawImage(bmp, 0, 0);
+    }, 'image/jpeg', jpegQuality(p));
   }
 }
 
@@ -237,45 +392,134 @@ function render() {
 const LIN = new Float32Array(256);
 for (let i = 0; i < 256; i++) LIN[i] = Math.pow(i / 255, 2.2);
 
+function mulberry(seed) {
+  let s = seed | 0;
+  return () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
 // fixed gaussian table so grain does not flicker while sliders move
 const GAUSS = new Float32Array(1 << 16);
 (function () {
-  let s = 0x9e3779b9;
-  const rnd = () => { s |= 0; s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const rnd = mulberry(0x9e3779b9);
   for (let i = 0; i < GAUSS.length; i += 2) {
     const u = Math.sqrt(-2 * Math.log(rnd() + 1e-12)), v = 2 * Math.PI * rnd();
     GAUSS[i] = u * Math.cos(v); GAUSS[i + 1] = u * Math.sin(v);
   }
 })();
 
-function process(src, w, h, p, outCanvas) {
-  const scale = w / 912;   // effects were tuned on a 912px-wide image
+// tileable pore texture: band-passed noise (fine blur minus coarse blur), unit variance
+const TEX_N = 256, TEX = (function () {
+  const N = TEX_N, a = new Float32Array(N * N);
+  for (let i = 0; i < a.length; i++) a[i] = GAUSS[(i * 7919) & 0xFFFF];
+  const blur = (src, r) => {
+    const tmp = new Float32Array(N * N), out = new Float32Array(N * N), n = 2 * r + 1;
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { let s = 0; for (let k = -r; k <= r; k++) s += src[y * N + ((x + k) & 255)]; tmp[y * N + x] = s / n; }
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { let s = 0; for (let k = -r; k <= r; k++) s += tmp[((y + k) & 255) * N + x]; out[y * N + x] = s / n; }
+    return out;
+  };
+  const f = blur(a, 1), c = blur(a, 3), t = new Float32Array(N * N);
+  let v = 0; for (let i = 0; i < t.length; i++) { t[i] = f[i] - c[i]; v += t[i] * t[i]; }
+  const k = 1 / Math.sqrt(v / t.length); for (let i = 0; i < t.length; i++) t[i] *= k;
+  return t;
+})();
 
-  // 1. base image with lens softness
-  const base = document.createElement('canvas'); base.width = w; base.height = h;
-  const bctx = base.getContext('2d', { willReadFrequently: true });
-  bctx.drawImage(src, 0, 0, w, h);
+// soft skin-tone mask from colour (YCbCr box with feathered edges), 0..1
+function skinMask(r, g, b) {
+  const y = 0.299 * r + 0.587 * g + 0.114 * b;
+  const cb = 128 - 0.169 * r - 0.331 * g + 0.5 * b, cr = 128 + 0.5 * r - 0.419 * g - 0.081 * b;
+  let m = (cr - 133) / 8; if (m <= 0) return 0; if (m > 1) m = 1;
+  let q = (180 - cr) / 8; if (q <= 0) return 0; if (q < 1) m *= q;
+  q = (cb - 72) / 8; if (q <= 0) return 0; if (q < 1) m *= q;
+  q = (130 - cb) / 8; if (q <= 0) return 0; if (q < 1) m *= q;
+  q = (y - 45) / 40; if (q <= 0) return 0; if (q < 1) m *= q;
+  return m;
+}
+
+function newCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function blurData(srcCanvas, w, h, r) {
+  const c = newCanvas(w, h), x = c.getContext('2d', { willReadFrequently: true });
+  x.filter = `blur(${r.toFixed(2)}px)`; x.drawImage(srcCanvas, 0, 0, w, h);
+  return x.getImageData(0, 0, w, h).data;
+}
+
+function process(src, w, h, p, outCanvas, vary) {
+  vary = vary || { seed: 0, angle: 0.45 };
+  const scale = w / 912;   // effects were tuned on a 912px-wide image
+  const cx = (w - 1) / 2, cy = (h - 1) / 2;
+
+  // 0. source, with a slight directional hand-shake smear
+  const A = newCanvas(w, h), actx = A.getContext('2d', { willReadFrequently: true });
+  if (p.shake > 0) {
+    const L = p.shake / 100 * 3.2 * scale, n = 7, ax = Math.cos(vary.angle), ay = Math.sin(vary.angle);
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1) - 0.5) * L;
+      actx.globalAlpha = 1 / (i + 1); actx.drawImage(src, t * ax, t * ay, w, h);
+    }
+    actx.globalAlpha = 1;
+  } else actx.drawImage(src, 0, 0, w, h);
+
+  // 0b. barrel distortion (corners stay in place, the centre bulges)
+  if (p.distort > 0) {
+    const im = actx.getImageData(0, 0, w, h), o = im.data, s = new Uint8ClampedArray(o);
+    const k = p.distort / 100 * 0.14, inv = 1 / (cx * cx + cy * cy), w4 = w * 4;
+    for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i += 4) {
+      const dx = x - cx, dy = y - cy, f = (1 + k * (dx * dx + dy * dy) * inv) / (1 + k);
+      let sx = cx + dx * f, sy = cy + dy * f;
+      sx = sx < 0 ? 0 : sx > w - 1.001 ? w - 1.001 : sx; sy = sy < 0 ? 0 : sy > h - 1.001 ? h - 1.001 : sy;
+      const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0, j = (y0 * w + x0) * 4;
+      const a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, e = fx * fy;
+      o[i] = s[j] * a + s[j + 4] * b + s[j + w4] * c + s[j + w4 + 4] * e;
+      o[i + 1] = s[j + 1] * a + s[j + 5] * b + s[j + w4 + 1] * c + s[j + w4 + 5] * e;
+      o[i + 2] = s[j + 2] * a + s[j + 6] * b + s[j + w4 + 2] * c + s[j + w4 + 6] * e;
+    }
+    actx.putImageData(im, 0, 0);
+  }
+
+  // 1. base image with overall lens softness
+  const base = newCanvas(w, h), bctx = base.getContext('2d', { willReadFrequently: true });
+  bctx.drawImage(A, 0, 0);
   if (p.soft > 0) {
     bctx.filter = `blur(${(0.6 * scale).toFixed(2)}px)`; bctx.globalAlpha = p.soft / 100;
-    bctx.drawImage(src, 0, 0, w, h);
+    bctx.drawImage(A, 0, 0);
     bctx.filter = 'none'; bctx.globalAlpha = 1;
   }
   const img = bctx.getImageData(0, 0, w, h), d = img.data;
 
+  // 1a. phone-style noise reduction (flattens low-contrast texture, keeps edges) and corner softness
+  if (p.nr > 0 || p.edgeSoft > 0) {
+    const bl = blurData(base, w, h, 1.8 * scale), nrK = p.nr / 100, edK = p.edgeSoft / 100, inv = 1 / (cx * cx + cy * cy);
+    for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i += 4) {
+      let wt = 0;
+      if (nrK > 0) {
+        let a = 0.299 * (d[i] - bl[i]) + 0.587 * (d[i + 1] - bl[i + 1]) + 0.114 * (d[i + 2] - bl[i + 2]);
+        a = ((a < 0 ? -a : a) - 3) / 10; wt = nrK * (a <= 0 ? 1 : a >= 1 ? 0 : 1 - a);
+      }
+      if (edK > 0) {
+        const q = ((x - cx) * (x - cx) + (y - cy) * (y - cy)) * inv, we = edK * q * Math.sqrt(q);
+        if (we > wt) wt = we;
+      }
+      if (wt > 0) { d[i] += (bl[i] - d[i]) * wt; d[i + 1] += (bl[i + 1] - d[i + 1]) * wt; d[i + 2] += (bl[i + 2] - d[i + 2]) * wt; }
+    }
+    bctx.putImageData(img, 0, 0);
+  }
+
+  // small working copy for all wide-radius maps
+  const sw = 256, sh = Math.max(1, Math.round(256 * h / w));
+  const small = newCanvas(sw, sh), sctx = small.getContext('2d', { willReadFrequently: true });
+  sctx.drawImage(base, 0, 0, sw, sh);
+  const smallData = sctx.getImageData(0, 0, sw, sh).data;
+  const upscale = c => {
+    const b = newCanvas(w, h), bc = b.getContext('2d', { willReadFrequently: true });
+    bc.imageSmoothingQuality = 'high'; bc.drawImage(c, 0, 0, w, h);
+    return bc.getImageData(0, 0, w, h).data;
+  };
+
   // 1b. local-average luminance maps for shadow shaping (fine + wide radius)
   let mapS = null, mapW = null;
   if (p.shadows !== 0 || p.contact > 0 || p.volume > 0) {
-    const sw = 256, sh = Math.max(1, Math.round(256 * h / w));
-    const small = document.createElement('canvas'); small.width = sw; small.height = sh;
-    small.getContext('2d').drawImage(base, 0, 0, sw, sh);
     const blurUp = r => {
       // left transparent on purpose: reading back un-premultiplies, which normalises the blur at the borders
-      const t = document.createElement('canvas'); t.width = sw; t.height = sh;
-      const tc = t.getContext('2d'); tc.filter = `blur(${r}px)`; tc.drawImage(small, 0, 0);
-      const b = document.createElement('canvas'); b.width = w; b.height = h;
-      const bc = b.getContext('2d', { willReadFrequently: true });
-      bc.imageSmoothingQuality = 'high'; bc.drawImage(t, 0, 0, w, h);
-      return bc.getImageData(0, 0, w, h).data;
+      const t = newCanvas(sw, sh), tc = t.getContext('2d'); tc.filter = `blur(${r}px)`; tc.drawImage(small, 0, 0);
+      return upscale(t);
     };
     mapS = blurUp(4); mapW = blurUp(32);
   }
@@ -283,33 +527,60 @@ function process(src, w, h, p, outCanvas) {
   // 2. bloom map: bright areas, blurred at low resolution, stored linearly
   let bloom = null;
   if (p.bloom > 0) {
-    const sw = 256, sh = Math.max(1, Math.round(256 * h / w));
-    const small = document.createElement('canvas'); small.width = sw; small.height = sh;
-    const sctx = small.getContext('2d', { willReadFrequently: true });
-    sctx.drawImage(base, 0, 0, sw, sh);
-    const si = sctx.getImageData(0, 0, sw, sh), sd = si.data;
+    const hc = newCanvas(sw, sh), hctx = hc.getContext('2d'), si = hctx.createImageData(sw, sh), sd = si.data;
     for (let i = 0; i < sd.length; i += 4) {
-      const r = LIN[sd[i]], g = LIN[sd[i + 1]], b = LIN[sd[i + 2]];
+      const r = LIN[smallData[i]], g = LIN[smallData[i + 1]], b = LIN[smallData[i + 2]];
       let m = (0.2126 * r + 0.7152 * g + 0.0722 * b - 0.65) / 0.35; m = m < 0 ? 0 : m > 1 ? 1 : m;
-      sd[i] = r * m * 255; sd[i + 1] = g * m * 255; sd[i + 2] = b * m * 255;
+      sd[i] = r * m * 255; sd[i + 1] = g * m * 255; sd[i + 2] = b * m * 255; sd[i + 3] = 255;
     }
-    sctx.putImageData(si, 0, 0);
-    const mix = document.createElement('canvas'); mix.width = sw; mix.height = sh;
-    const mctx = mix.getContext('2d');
+    hctx.putImageData(si, 0, 0);
+    const mix = newCanvas(sw, sh), mctx = mix.getContext('2d');
     mctx.fillStyle = '#000'; mctx.fillRect(0, 0, sw, sh);
     mctx.globalCompositeOperation = 'lighter';
-    mctx.filter = `blur(${(sw / 28).toFixed(1)}px)`; mctx.globalAlpha = 0.69; mctx.drawImage(small, 0, 0);
-    mctx.filter = `blur(${(sw / 9).toFixed(1)}px)`;  mctx.globalAlpha = 0.31; mctx.drawImage(small, 0, 0);
-    const big = document.createElement('canvas'); big.width = w; big.height = h;
-    const gctx = big.getContext('2d', { willReadFrequently: true });
-    gctx.imageSmoothingQuality = 'high'; gctx.drawImage(mix, 0, 0, w, h);
-    bloom = gctx.getImageData(0, 0, w, h).data;
+    mctx.filter = `blur(${(sw / 28).toFixed(1)}px)`; mctx.globalAlpha = 0.69; mctx.drawImage(hc, 0, 0);
+    mctx.filter = `blur(${(sw / 9).toFixed(1)}px)`;  mctx.globalAlpha = 0.31; mctx.drawImage(hc, 0, 0);
+    bloom = upscale(mix);
+  }
+
+  // 2b. lens flare ghosts: a chain of faint discs mirrored through the centre from the light source
+  let flare = null;
+  if (p.flare > 0) {
+    let sx = 0, sy = 0, n = 0;
+    for (let y = 0, i = 0; y < sh; y++) for (let x = 0; x < sw; x++, i += 4)
+      if (0.299 * smallData[i] + 0.587 * smallData[i + 1] + 0.114 * smallData[i + 2] > 238) { sx += x; sy += y; n++; }
+    if (n > sw * sh * 0.0015) {
+      const lx = (sx / n + 0.5) / sw * w, ly = (sy / n + 0.5) / sh * h;
+      const fc = newCanvas(w, h), fx = fc.getContext('2d', { willReadFrequently: true });
+      fx.fillStyle = '#000'; fx.fillRect(0, 0, w, h); fx.globalCompositeOperation = 'lighter';
+      const ghosts = [[0.35, 0.035, '255,180,90', 0.30], [0.7, 0.018, '120,255,160', 0.35], [1.0, 0.06, '255,120,90', 0.22],
+                      [1.35, 0.095, '110,150,255', 0.16], [1.7, 0.045, '255,210,120', 0.25], [-0.25, 0.05, '160,120,255', 0.14]];
+      for (const [t, rr, col, al] of ghosts) {
+        const gx = lx + (w / 2 - lx) * (1 + t) , gy = ly + (h / 2 - ly) * (1 + t), R = rr * w;
+        const g = fx.createRadialGradient(gx, gy, 0, gx, gy, R);
+        g.addColorStop(0, `rgba(${col},${al * 0.7})`); g.addColorStop(0.75, `rgba(${col},${al})`); g.addColorStop(1, `rgba(${col},0)`);
+        fx.fillStyle = g; fx.beginPath(); fx.arc(gx, gy, R, 0, 7); fx.fill();
+      }
+      flare = fx.getImageData(0, 0, w, h).data;
+    }
+  }
+
+  // 2c. purple fringing map: a thin halo around blown highlights
+  let fringe = null;
+  if (p.fringe > 0) {
+    const tc = newCanvas(w, h), tx = tc.getContext('2d'), ti = tx.createImageData(w, h), td = ti.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const v = l > 240 ? 255 : l < 215 ? 0 : (l - 215) * 10.2;
+      td[i] = td[i + 1] = td[i + 2] = v; td[i + 3] = 255;
+    }
+    tx.putImageData(ti, 0, 0);
+    fringe = blurData(tc, w, h, 2.4 * scale);
   }
 
   // 3. low-res luminance grain field (bilinear upsampled for bigger grain)
   const gs = p.gsize, gw = Math.ceil(w / gs) + 2, gh = Math.ceil(h / gs) + 2;
   const field = new Float32Array(gw * gh);
-  let seed = 12345;
+  let seed = 12345 + (vary.seed | 0);
   const next = () => { seed = Math.imul(seed, 1664525) + 1013904223 | 0; return seed >>> 16; };
   for (let i = 0; i < field.length; i++) field[i] = GAUSS[next()];
   const gNorm = gs > 1 ? 1.5 : 1;
@@ -321,8 +592,9 @@ function process(src, w, h, p, outCanvas) {
   const expGain = Math.pow(2, p.exp / 50);
   const warmR = 1 + p.warm / 50 * 0.12, warmB = 1 - p.warm / 50 * 0.12;
   const con = p.contrast / 100, sat = 1 + p.sat / 100, fade = p.fade / 100;
-  const cx = (w - 1) / 2, cy = (h - 1) / 2;
   const shK = p.shadows / 100 * 0.7, ctK = p.contact / 100 * 2.5, volK = p.volume / 100 * 2.0, tintK = p.stint / 50 * 0.15;
+  const skinK = p.skin / 100 * 0.11, texStep = 1 / Math.max(1, scale * 0.85);
+  const clipK = p.clip / 100, clipGain = 1 + 2.2 * clipK, fringeK = p.fringe / 100 * 0.55 / 255, flareK = p.flare / 100 * 0.55;
   const src8 = ca > 0 ? new Uint8ClampedArray(d) : d;
   const samp = (x, y, c) => {     // bilinear sample of one channel
     x = x < 0 ? 0 : x > w - 1.001 ? w - 1.001 : x; y = y < 0 ? 0 : y > h - 1.001 ? h - 1.001 : y;
@@ -333,16 +605,18 @@ function process(src, w, h, p, outCanvas) {
 
   for (let y = 0, i = 0; y < h; y++) {
     const dy = (y - cy) / cy, gy = y / gs, gy0 = gy | 0, gfy = gy - gy0;
+    const ty = y * texStep, ty0 = ty | 0, tfy = ty - ty0, tr0 = (ty0 & 255) * TEX_N, tr1 = ((ty0 + 1) & 255) * TEX_N;
     for (let x = 0; x < w; x++, i += 4) {
       let r, g, b;
+      const R8 = src8[i], G8 = src8[i + 1], B8 = src8[i + 2];
+      const L = (0.299 * R8 + 0.587 * G8 + 0.114 * B8) / 255;
       if (ca > 0) {
         r = LIN[samp(cx + (x - cx) * (1 + ca), cy + (y - cy) * (1 + ca), 0) + 0.5 | 0];
-        g = LIN[src8[i + 1]];
+        g = LIN[G8];
         b = LIN[samp(cx + (x - cx) * (1 - ca), cy + (y - cy) * (1 - ca), 2) + 0.5 | 0];
-      } else { r = LIN[d[i]]; g = LIN[d[i + 1]]; b = LIN[d[i + 2]]; }
+      } else { r = LIN[R8]; g = LIN[G8]; b = LIN[B8]; }
 
       if (mapS) {
-        const L = (0.299 * src8[i] + 0.587 * src8[i + 1] + 0.114 * src8[i + 2]) / 255;
         const Ls = (0.299 * mapS[i] + 0.587 * mapS[i + 1] + 0.114 * mapS[i + 2]) / 255;
         let m = 1;
         if (shK !== 0) m *= 1 - shK * (1 - Ls) * (1 - Ls);
@@ -350,11 +624,19 @@ function process(src, w, h, p, outCanvas) {
         if (volK > 0) m *= Math.exp(volK * (Ls - (0.299 * mapW[i] + 0.587 * mapW[i + 1] + 0.114 * mapW[i + 2]) / 255));
         r *= m; g *= m; b *= m;
       }
-      if (tintK !== 0) {
-        const q = 1 - (0.299 * src8[i] + 0.587 * src8[i + 1] + 0.114 * src8[i + 2]) / 255, t = tintK * q * q;
-        r *= 1 - t; b *= 1 + t;
+      if (tintK !== 0) { const t = tintK * (1 - L) * (1 - L); r *= 1 - t; b *= 1 + t; }
+      if (skinK > 0) {
+        const m = skinMask(R8, G8, B8);
+        if (m > 0) {
+          const tx = x * texStep, tx0 = tx | 0, tfx = tx - tx0, a0 = tx0 & 255, a1 = (tx0 + 1) & 255;
+          const t = ((TEX[tr0 + a0] * (1 - tfx) + TEX[tr0 + a1] * tfx) * (1 - tfy) + (TEX[tr1 + a0] * (1 - tfx) + TEX[tr1 + a1] * tfx) * tfy) * skinK * m;
+          r *= 1 + t * 0.9; g *= 1 + t * 1.05; b *= 1 + t * 1.1;
+        }
       }
+
       if (bloom) { r += bloom[i] * bloomK; g += bloom[i + 1] * bloomK * 0.82; b += bloom[i + 2] * bloomK * 0.62; }
+      if (flare) { r += LIN[flare[i]] * flareK; g += LIN[flare[i + 1]] * flareK; b += LIN[flare[i + 2]] * flareK; }
+      if (fringe) { const f = fringe[i] * fringeK * (1 - L); r += f * 0.55; g += f * 0.06; b += f; }
       if (haze > 0) { r = r * (1 - haze) + hazeAdd; g = g * (1 - haze) + hazeAdd * 0.93; b = b * (1 - haze) + hazeAdd * 0.82; }
       if (vig > 0) {
         const dx = (x - cx) / cx; let q = (dx * dx + dy * dy) / 2; q = q > 1 ? 1 : q;
@@ -373,11 +655,18 @@ function process(src, w, h, p, outCanvas) {
         b += Math.sqrt(b + 0.002) * (n + cAmt * GAUSS[next()]);
       }
 
-      // tone: gamma, soft highlight shoulder, S-curve, faded blacks
+      // sensor saturation: each channel clips on its own, which shifts colour near blown areas
+      if (clipK > 0) {
+        if (r > 0.5) r = 0.5 + (r - 0.5) * clipGain;
+        if (g > 0.5) g = 0.5 + (g - 0.5) * clipGain;
+        if (b > 0.5) b = 0.5 + (b - 0.5) * clipGain;
+      }
+      // tone: gamma, highlight shoulder (weaker when clipping is harsh), S-curve, faded blacks
       r = Math.pow(r > 0 ? r : 0, INV_G); g = Math.pow(g > 0 ? g : 0, INV_G); b = Math.pow(b > 0 ? b : 0, INV_G);
-      if (r > 0.8) r = 0.8 + (1 - Math.exp(-(r - 0.8) / 0.2)) * 0.2;
-      if (g > 0.8) g = 0.8 + (1 - Math.exp(-(g - 0.8) / 0.2)) * 0.2;
-      if (b > 0.8) b = 0.8 + (1 - Math.exp(-(b - 0.8) / 0.2)) * 0.2;
+      if (r > 0.8) r += (0.8 + (1 - Math.exp(-(r - 0.8) / 0.2)) * 0.2 - r) * (1 - clipK);
+      if (g > 0.8) g += (0.8 + (1 - Math.exp(-(g - 0.8) / 0.2)) * 0.2 - g) * (1 - clipK);
+      if (b > 0.8) b += (0.8 + (1 - Math.exp(-(b - 0.8) / 0.2)) * 0.2 - b) * (1 - clipK);
+      if (r > 1) r = 1; if (g > 1) g = 1; if (b > 1) b = 1;
       if (con !== 0) {
         r += con * Math.sin(TWO_PI * (r - 0.5)) / Math.PI;
         g += con * Math.sin(TWO_PI * (g - 0.5)) / Math.PI;
@@ -390,7 +679,17 @@ function process(src, w, h, p, outCanvas) {
     }
   }
   outCanvas.width = w; outCanvas.height = h;
-  outCanvas.getContext('2d').putImageData(img, 0, 0);
+  const octx = outCanvas.getContext('2d', { willReadFrequently: true });
+  octx.putImageData(img, 0, 0);
+
+  // 4. in-camera sharpening with visible halos (unsharp mask on the finished picture)
+  if (p.sharpen > 0) {
+    const bl = blurData(outCanvas, w, h, 1.1 * scale), k = p.sharpen / 100 * 1.6;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] += (d[i] - bl[i]) * k; d[i + 1] += (d[i + 1] - bl[i + 1]) * k; d[i + 2] += (d[i + 2] - bl[i + 2]) * k;
+    }
+    octx.putImageData(img, 0, 0);
+  }
 }
 </script>
 </body>
