@@ -60,7 +60,7 @@
     <button id="preset">Как в примере</button>
     <button id="reset">Сбросить всё</button>
   </div>
-  <p class="hint">Одно фото открывается для ручной настройки. Несколько фото сразу обрабатываются в режиме «Авто» с выбранной камерой и скачиваются одним ZIP-архивом. Всё происходит на вашем компьютере, файлы никуда не отправляются. Автофокус один раз скачивает модель глубины из интернета; сами фото при этом остаются у вас.</p>
+  <p class="hint">Одно фото открывается для ручной настройки. Несколько фото сразу обрабатываются в режиме «Авто» с выбранной камерой и скачиваются одним ZIP-архивом. Всё происходит на вашем компьютере, файлы никуда не отправляются. Кнопки с пометкой «нейросеть» один раз скачивают свою модель из интернета; сами фото при этом остаются у вас.</p>
 </aside>
 <main id="main">
   <div id="drop"><b>Перетащите фото сюда</b>одно — для настройки, несколько — для пакетной обработки</div>
@@ -75,6 +75,9 @@ const CONTROLS = [
   ['dof',     'Сила размытия фона',     0, 100, 1, 0, 0],
   ['focus',   'Дистанция фокуса (далеко ↔ близко)', 0, 100, 1, 50, 50],
   ['dofRange','Зона резкости',          0, 50, 1, 12, 12],
+  ['Свет по форме'],
+  ['relight', 'Сила света по форме (нужна глубина)', 0, 100, 1, 0, 0],
+  ['lightAngle','Направление света, °', 0, 355, 5, 135, 135],
   ['Оптика'],
   ['soft',    'Мягкость оптики',        0, 100, 1, 45, 0],
   ['edgeSoft','Мягкость к краям',       0, 100, 1, 0, 0],
@@ -137,6 +140,8 @@ let pending = false, showOriginal = false, fileName = 'photo', busy = false;
 let profile = 'none', autoNote = '', renderToken = 0;
 let variation = { seed: 0, angle: 0.45 };
 let dofEnabled = false, srcDepth = null, depthPipe = null;
+let srcMatte = null, srcParse = null, matteOn = false, parseOn = false, matteNet = null, parsePipe = null, TF = null;
+const srcMaps = () => ({ depth: srcDepth, matte: srcMatte, parse: srcParse });
 const PREVIEW_MAX_PIXELS = 1.8e6;
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
@@ -149,6 +154,16 @@ for (const c of CONTROLS) {
       const b = document.createElement('button'); b.id = 'dofBtn'; b.style.width = '100%';
       b.textContent = 'Включить автофокус (нейросеть, ~27 МБ)';
       b.title = 'Один раз скачивает модель оценки глубины; фото обрабатываются на вашем компьютере';
+      box.append(b);
+      const m = document.createElement('button'); m.id = 'matteBtn'; m.style.width = '100%'; m.style.marginTop = '6px';
+      m.textContent = 'Точный контур и волосы (нейросеть, ~26 МБ)';
+      m.title = 'Выделяет человека с точностью до прядей, чтобы размытие фона не задевало волосы';
+      box.append(m);
+    }
+    if (c[0] === 'Кожа и детали') {
+      const b = document.createElement('button'); b.id = 'parseBtn'; b.style.width = '100%';
+      b.textContent = 'Кожа и волосы по зонам (нейросеть, ~28 МБ)';
+      b.title = 'Текстура пор ложится только на кожу, а волосы защищены от шумодава и смягчения';
       box.append(b);
     }
     if (c[0] === 'Зерно') {
@@ -215,16 +230,175 @@ function loadImage(img) {
   srcImg = toCanvas(img);
   $('drop').style.display = 'none'; view.style.display = 'block';
   for (const id of ['save', 'compare', 'auto', 'vary', 'autograin']) $(id).disabled = false;
-  autoNote = ''; srcDepth = null;
+  autoNote = ''; srcDepth = srcMatte = srcParse = null;
   schedule();
-  if (dofEnabled) prepareDepth();
+  prepareMaps();
 }
 window.loadImage = loadImage;
 
 // ---------- depth of field (neural depth estimation, runs locally) ----------
+// ---------- neural helpers shared by all models ----------
+const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
+async function getTF() { return TF || (TF = await import(TF_URL)); }
+const dlProgress = name => e => { if (e.status === 'progress' && /\.onnx$/.test(e.file || '')) $('status').textContent = `Скачиваю модель «${name}»: ${Math.round(e.progress)}%`; };
+function smallDataURL(canvas, maxSide) {
+  const k = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
+  const sc = newCanvas(Math.round(canvas.width * k), Math.round(canvas.height * k));
+  sc.getContext('2d').drawImage(canvas, 0, 0, sc.width, sc.height);
+  return sc.toDataURL('image/jpeg', 0.9);
+}
+function upscaleMap(c, w, h) {
+  const b = newCanvas(w, h), x = b.getContext('2d', { willReadFrequently: true });
+  x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, w, h);
+  return x.getImageData(0, 0, w, h).data;
+}
+
+// subject matte (portrait matting): white = subject, including loose hair
+async function ensureMatte() {
+  if (matteNet) return;
+  const T = await getTF();
+  const model = await T.AutoModel.from_pretrained('Xenova/modnet', { dtype: 'fp32', progress_callback: dlProgress('контур объекта') });
+  matteNet = { model, proc: await T.AutoProcessor.from_pretrained('Xenova/modnet') };
+}
+async function estimateMatte(canvas) {
+  await ensureMatte();
+  const T = await getTF(), img = await T.RawImage.read(smallDataURL(canvas, 768));
+  const { pixel_values } = await matteNet.proc(img);
+  const { output } = await matteNet.model({ input: pixel_values });
+  const dims = output.dims, H = dims[dims.length - 2], W = dims[dims.length - 1], a = output.data;
+  const c = newCanvas(W, H), x = c.getContext('2d', { willReadFrequently: true }), im = x.createImageData(W, H);
+  let sum = 0;
+  for (let j = 0; j < W * H; j++) { const v = a[j] * 255; sum += a[j]; im.data[j * 4] = im.data[j * 4 + 1] = im.data[j * 4 + 2] = v; im.data[j * 4 + 3] = 255; }
+  x.putImageData(im, 0, 0);
+  c._cover = sum / (W * H);      // share of the frame taken by the subject
+  return c;
+}
+
+// human parsing: red channel = skin (face, arms, legs), green channel = hair
+const SKIN_LABELS = new Set(['Face', 'Left-arm', 'Right-arm', 'Left-leg', 'Right-leg']);
+async function ensureParse() {
+  if (parsePipe) return;
+  const T = await getTF();
+  parsePipe = await T.pipeline('image-segmentation', 'Xenova/segformer_b2_clothes', { progress_callback: dlProgress('кожа и волосы') });
+}
+async function estimateParse(canvas) {
+  await ensureParse();
+  const segs = await parsePipe(smallDataURL(canvas, 640));
+  const W = segs[0].mask.width, H = segs[0].mask.height;
+  const raw = newCanvas(W, H), rx = raw.getContext('2d'), im = rx.createImageData(W, H);
+  for (let j = 0; j < W * H; j++) im.data[j * 4 + 3] = 255;
+  let skin = 0, hair = 0;
+  for (const sg of segs) {
+    const ch = SKIN_LABELS.has(sg.label) ? 0 : sg.label === 'Hair' ? 1 : -1;
+    if (ch < 0) continue;
+    const m = sg.mask.data, step = sg.mask.channels || 1;
+    for (let j = 0; j < W * H; j++) if (m[j * step] > 127) { im.data[j * 4 + ch] = 255; if (ch) hair++; else skin++; }
+  }
+  rx.putImageData(im, 0, 0);
+  const c = newCanvas(W, H), x = c.getContext('2d', { willReadFrequently: true });
+  x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.filter = 'blur(1.5px)'; x.drawImage(raw, 0, 0);   // feather the zone edges
+  c._skin = skin / (W * H); c._hair = hair / (W * H);
+  return c;
+}
+
+// light by shape, from the depth map: surface slopes (for shading) and creases (ambient occlusion)
+function boxBlurF(a, w, h, r, passes) {     // separable box blur on a float array (repeated = near-gaussian)
+  let src = a, tmp = new Float32Array(w * h), dst = new Float32Array(w * h);
+  for (let ps = 0; ps < passes; ps++) {
+    for (let y = 0; y < h; y++) {
+      let acc = 0, cnt = 0; const row = y * w;
+      for (let x = 0; x <= r && x < w; x++) { acc += src[row + x]; cnt++; }
+      for (let x = 0; x < w; x++) {
+        tmp[row + x] = acc / cnt;
+        const add = x + r + 1, sub = x - r;
+        if (add < w) { acc += src[row + add]; cnt++; }
+        if (sub >= 0) { acc -= src[row + sub]; cnt--; }
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      let acc = 0, cnt = 0;
+      for (let y = 0; y <= r && y < h; y++) { acc += tmp[y * w + x]; cnt++; }
+      for (let y = 0; y < h; y++) {
+        dst[y * w + x] = acc / cnt;
+        const add = y + r + 1, sub = y - r;
+        if (add < h) { acc += tmp[add * w + x]; cnt++; }
+        if (sub >= 0) { acc -= tmp[sub * w + x]; cnt--; }
+      }
+    }
+    src = dst; dst = new Float32Array(w * h);
+  }
+  return src;
+}
+function depthGeom(depth) {
+  if (depth._gx) return;
+  // prefer the model's float output: 8-bit depth turns smooth surfaces into contour bands
+  let w = depth._fw, h = depth._fh, f = depth._f;
+  if (!f) { w = depth.width; h = depth.height; f = new Float32Array(w * h); for (let j = 0; j < w * h; j++) f[j] = depth._data[j * 4]; }
+  const n = w * h, b = boxBlurF(f, w, h, 3, 3), wide = boxBlurF(f, w, h, 9, 3);
+  const gx = new Float32Array(n), gy = new Float32Array(n), ao = new Uint8Array(n);
+  for (let y = 0, j = 0; y < h; y++) for (let x = 0; x < w; x++, j++) {
+    let dx = (b[x < w - 1 ? j + 1 : j] - b[x > 0 ? j - 1 : j]) / 2, dy = (b[y < h - 1 ? j + w : j] - b[y > 0 ? j - w : j]) / 2;
+    // outlines are depth jumps, not surfaces: fade them out so they do not turn into dark rims
+    const mag = Math.sqrt(dx * dx + dy * dy), t = clamp((mag - 1.5) / 2.5, 0, 1), keep = 1 - t * t * (3 - 2 * t);
+    gx[j] = dx * keep; gy[j] = dy * keep;
+    ao[j] = clamp((wide[j] - b[j]) / 30, 0, 1) * clamp((b[j] - 40) / 60, 0, 1) * keep * 255;   // creases on near objects only
+  }
+  depth._gx = gx; depth._gy = gy; depth._ao = ao; depth._gw = w; depth._gh = h;
+}
+// red = shading relative to a flat surface (128 = unchanged), green = ambient occlusion
+function lightMap(depth, angle) {
+  depthGeom(depth);
+  const w = depth._gw, h = depth._gh, a = angle * Math.PI / 180, gx = depth._gx, gy = depth._gy, ao = depth._ao;
+  let lx = Math.cos(a), ly = -Math.sin(a), lz = 0.7; const ln = Math.hypot(lx, ly, lz); lx /= ln; ly /= ln; lz /= ln;
+  const c = newCanvas(w, h), x = c.getContext('2d'), im = x.createImageData(w, h), o = im.data;
+  for (let j = 0, i = 0; j < w * h; j++, i += 4) {
+    const nx = -gx[j] * 0.45, ny = -gy[j] * 0.45, dl = (nx * lx + ny * ly + lz) / Math.sqrt(nx * nx + ny * ny + 1) - lz;
+    o[i] = 128 + clamp(dl * 2, -1, 1) * 127; o[i + 1] = ao[j]; o[i + 3] = 255;
+  }
+  x.putImageData(im, 0, 0);
+  return c;
+}
+// direction the scene is already lit from (degrees, 0 = right, 90 = top), so added shading agrees with it
+function autoLight(src, depth) {
+  depthGeom(depth);
+  const w = depth._gw, h = depth._gh, gx = depth._gx, gy = depth._gy;
+  const c = newCanvas(w, h), x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0, w, h);
+  const sd = x.getImageData(0, 0, w, h).data, bl = blurData(c, w, h, 12);
+  let sx = 0, sy = 0;
+  for (let j = 0, i = 0; j < w * h; j++, i += 4) {
+    const hp = 0.299 * (sd[i] - bl[i]) + 0.587 * (sd[i + 1] - bl[i + 1]) + 0.114 * (sd[i + 2] - bl[i + 2]);
+    sx -= gx[j] * hp; sy -= gy[j] * hp;
+  }
+  return ((Math.atan2(-sy, sx) * 180 / Math.PI) + 360) % 360;
+}
+
+async function prepareMaps() {
+  const my = srcImg;
+  if (dofEnabled && !srcDepth) await prepareDepth();
+  try {
+    if (matteOn && my === srcImg && !srcMatte) {
+      $('status').textContent = 'Выделяю контур объекта…';
+      const m = await estimateMatte(my); if (my === srcImg) { srcMatte = m; schedule(); }
+    }
+    if (parseOn && my === srcImg && !srcParse) {
+      $('status').textContent = 'Размечаю кожу и волосы…';
+      const m = await estimateParse(my); if (my === srcImg) { srcParse = m; schedule(); }
+    }
+  } catch (err) { $('status').textContent = 'Ошибка нейросети: ' + err.message; }
+}
+function aiButton(id, onLabel, ensure, turnOn) {
+  $(id).onclick = async () => {
+    const b = $(id), old = b.textContent; b.disabled = true; b.textContent = 'Загружаю модель…';
+    try { await ensure(); turnOn(); b.textContent = onLabel; if (srcImg) await prepareMaps(); else $('status').textContent = 'Модель готова'; }
+    catch (err) { b.disabled = false; b.textContent = old; $('status').textContent = 'Не удалось загрузить модель (нужен интернет): ' + err.message; }
+  };
+}
+aiButton('matteBtn', 'Точный контур включён', ensureMatte, () => { matteOn = true; });
+aiButton('parseBtn', 'Разметка кожи и волос включена', ensureParse, () => { parseOn = true; });
+
 async function getDepthPipe() {
   if (!depthPipe) {
-    const T = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2');
+    const T = await getTF();
     depthPipe = await T.pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small', {
       dtype: 'q8',
       progress_callback: e => { if (e.status === 'progress' && /\.onnx$/.test(e.file || '')) $('status').textContent = `Скачиваю модель глубины: ${Math.round(e.progress)}%`; },
@@ -245,6 +419,15 @@ async function estimateDepth(canvas) {
   for (let j = 0; j < n; j++) { const v = di.data[j * ch]; im.data[j * 4] = im.data[j * 4 + 1] = im.data[j * 4 + 2] = v; im.data[j * 4 + 3] = 255; }
   dx.putImageData(im, 0, 0);
   dc._data = im.data;
+  const pd = out.predicted_depth;      // float depth at the model's own resolution, for smooth surface slopes
+  if (pd && pd.data && pd.dims && pd.dims.length >= 2) {
+    const fh = pd.dims[pd.dims.length - 2], fw = pd.dims[pd.dims.length - 1], src = pd.data;
+    let mn = Infinity, mx = -Infinity;
+    for (let j = 0; j < fw * fh; j++) { const v = src[j]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    const f = new Float32Array(fw * fh), k = 255 / Math.max(1e-6, mx - mn);
+    for (let j = 0; j < fw * fh; j++) f[j] = (src[j] - mn) * k;
+    dc._f = f; dc._fw = fw; dc._fh = fh;
+  }
   return dc;
 }
 // focus distance (0..100): where the skin is, otherwise the nearest large central object
@@ -270,7 +453,7 @@ async function prepareDepth() {
     if (my !== srcImg) return;
     srcDepth = dc;
     const pr = PROFILES[profile];
-    setValues({ dof: pr.set.dof ?? 35, focus: Math.round(autoFocus(srcImg, dc)), dofRange: 12 });
+    setValues({ dof: pr.set.dof ?? 35, focus: Math.round(autoFocus(srcImg, dc)), dofRange: 12, relight: 20, lightAngle: Math.round(autoLight(srcImg, dc) / 5) * 5 });
     autoNote = ` · глубина оценена за ${((performance.now() - t0) / 1000).toFixed(1)} с, фокус ${inputs.focus.value}`;
   } catch (err) {
     $('status').textContent = 'Не удалось оценить глубину (для первой загрузки модели нужен интернет): ' + err.message;
@@ -280,7 +463,7 @@ $('dofBtn').onclick = async () => {
   const b = $('dofBtn'); b.disabled = true; b.textContent = 'Загружаю модель…';
   try {
     await getDepthPipe(); dofEnabled = true; b.textContent = 'Автофокус включён — клик по фото переносит фокус';
-    if (srcImg) await prepareDepth(); else $('status').textContent = 'Модель глубины готова';
+    if (srcImg) await prepareMaps(); else $('status').textContent = 'Модель глубины готова';
   } catch (err) {
     b.disabled = false; b.textContent = 'Включить автофокус (нейросеть, ~27 МБ)';
     $('status').textContent = 'Не удалось загрузить модель (нужен интернет): ' + err.message;
@@ -354,13 +537,13 @@ function autoSettings(s) {
   v.fringe = s.bright > 0.004 ? 12 : 0;
   v.flare = s.hot > 0.002 ? 25 : 0;                            // only with a real light source in frame
   v.edgeSoft = 15; v.distort = 2;
-  v.dof = 35;                                                  // used only when a depth map is available
+  v.dof = 35; v.relight = 20;                                  // used only when a depth map is available
   return v;
 }
 const grainTarget = s => 9 + 13 * clamp((0.5 - s.p50) / 0.35, 0, 1);
 // noise already in the photo, in "Зерно" slider units (1.8 = detail floor of a clean image, 0.45 = measured response per unit)
 const grainExisting = s => Math.sqrt(Math.max(0, s.noise * s.noise - 1.8 * 1.8)) / 0.45;
-function buildSettings(stats, profId, jitter, rnd, focus) {
+function buildSettings(stats, profId, jitter, rnd, focus, lightAngle) {
   const v = autoSettings(stats), pr = PROFILES[profId] || PROFILES.none;
   for (const k in pr.mul) v[k] *= pr.mul[k];
   for (const k in pr.add) v[k] += pr.add[k];
@@ -368,13 +551,14 @@ function buildSettings(stats, profId, jitter, rnd, focus) {
   // noise adds in quadrature: top up only what is missing to reach the target
   if (v.grain > 0) { const e = grainExisting(stats), k = e >= 0.92 * v.grain ? 0 : Math.sqrt(Math.max(0, v.grain * v.grain - e * e)) / v.grain; v.grain *= k; v.cgrain *= k; }
   const st = +$('strength').value / 100;       // master strength: scales every effect toward neutral
-  for (const k in v) if (k !== 'focus' && k !== 'dofRange' && k !== 'gsize') v[k] = SPEC[k][6] + (v[k] - SPEC[k][6]) * st;
+  for (const k in v) if (k !== 'focus' && k !== 'dofRange' && k !== 'gsize' && k !== 'lightAngle') v[k] = SPEC[k][6] + (v[k] - SPEC[k][6]) * st;
   for (const k in v) {
     const [, , min, max, step] = SPEC[k];
-    if (jitter && k !== 'gsize' && k !== 'focus' && k !== 'dofRange') v[k] *= 1 + (rnd() - 0.5) * 0.26;
+    if (jitter && k !== 'gsize' && k !== 'focus' && k !== 'dofRange' && k !== 'lightAngle') v[k] *= 1 + (rnd() - 0.5) * 0.26;
     v[k] = clamp(Math.round(v[k] / step) * step, min, max);
   }
-  if (focus == null) v.dof = 0; else v.focus = Math.round(focus);
+  if (focus == null) { v.dof = 0; v.relight = 0; }
+  else { v.focus = Math.round(focus); if (lightAngle != null) v.lightAngle = Math.round(lightAngle / 5) * 5 % 360; }
   return v;
 }
 // ---------- contrast guard: measure the result and back off until it matches the source ----------
@@ -400,7 +584,7 @@ function guardContrast(src, v, depth, profId) {
     if (!tooPunchy && !crushed) break;
     if (tooPunchy) {
       v.contrast = clamp(Math.round(v.contrast - Math.max(2, (ratio - allow) * 70)), -30, 40);
-      v.contact = Math.round(v.contact * 0.75); v.volume = Math.round(v.volume * 0.75); v.clip = Math.round(v.clip * 0.75);
+      v.contact = Math.round(v.contact * 0.75); v.volume = Math.round(v.volume * 0.75); v.clip = Math.round(v.clip * 0.75); v.relight = Math.round(v.relight * 0.75);
     }
     if (crushed) v.shadows = Math.max(-20, v.shadows - 5);
   }
@@ -411,7 +595,7 @@ function guardContrast(src, v, depth, profId) {
 function newVariation() { variation = { seed: Math.random() * 1e9 | 0, angle: Math.random() * Math.PI }; }
 function applyAuto(jitter) {
   const s = analyze(srcImg);
-  const v = guardContrast(srcImg, buildSettings(s, profile, jitter, Math.random, srcDepth ? autoFocus(srcImg, srcDepth) : null), srcDepth, profile);
+  const v = guardContrast(srcImg, buildSettings(s, profile, jitter, Math.random, srcDepth ? autoFocus(srcImg, srcDepth) : null, srcDepth ? autoLight(srcImg, srcDepth) : null), srcMaps(), profile);
   setValues(v);
   autoNote = ` · авто (${PROFILES[profile].label.toLowerCase()}): шум ${s.noise.toFixed(1)}, резкость ${s.sharp.toFixed(1)}, яркие зоны ${(s.bright * 100).toFixed(1)}%, кожа ${(s.skin * 100).toFixed(0)}%, контраст к исходнику ×${v._ratio.toFixed(2)}`;
 }
@@ -443,7 +627,7 @@ $('save').onclick = () => {
   $('status').textContent = 'Сохраняю в полном размере…';
   setTimeout(async () => {
     const out = document.createElement('canvas'), p = params();
-    process(srcImg, srcImg.width, srcImg.height, p, out, variation, srcDepth);
+    process(srcImg, srcImg.width, srcImg.height, p, out, variation, srcMaps());
     download(await toBlob(out, jpegQuality(p)), fileName + '_real.jpg');
     $('status').textContent = `Сохранено: ${fileName}_real.jpg (${out.width}×${out.height})`;
   }, 30);
@@ -463,9 +647,10 @@ async function batch(files) {
         const jit = $('jitter').checked;
         const vr = jit ? { seed: Math.random() * 1e9 | 0, angle: Math.random() * Math.PI } : variation;
         const depth = dofEnabled ? await estimateDepth(cnv) : null;
-        const p = guardContrast(cnv, buildSettings(analyze(cnv), profile, jit, Math.random, depth ? autoFocus(cnv, depth) : null), depth, profile);
+        const maps = { depth, matte: matteOn ? await estimateMatte(cnv) : null, parse: parseOn ? await estimateParse(cnv) : null };
+        const p = guardContrast(cnv, buildSettings(analyze(cnv), profile, jit, Math.random, depth ? autoFocus(cnv, depth) : null, depth ? autoLight(cnv, depth) : null), maps, profile);
         const out = document.createElement('canvas');
-        process(cnv, cnv.width, cnv.height, p, out, vr, depth);
+        process(cnv, cnv.width, cnv.height, p, out, vr, maps);
         const blob = await toBlob(out, jpegQuality(p));
         let name = (f.name || 'photo').replace(/\.[^.]+$/, '') + '_real', n = name, k = 2;
         while (used.has(n)) n = name + '_' + k++;
@@ -522,7 +707,7 @@ function render() {
     return;
   }
   const p = params();
-  process(srcImg, w, h, p, view, variation, srcDepth);
+  process(srcImg, w, h, p, view, variation, srcMaps());
   $('status').textContent = `${srcImg.width}×${srcImg.height}` + (k < 1 ? ` · предпросмотр ${w}×${h}` : '') + ` · ${Math.round(performance.now() - t0)} мс` + autoNote;
   if (p.jpeg > 0) {       // show real compression artifacts: encode and decode the preview
     view.toBlob(async b => {
@@ -585,7 +770,9 @@ function blurData(srcCanvas, w, h, r) {
   return x.getImageData(0, 0, w, h).data;
 }
 
-function process(src, w, h, p, outCanvas, vary, depth) {
+function process(src, w, h, p, outCanvas, vary, maps) {
+  const depth = maps && maps.depth, parse = maps && maps.parse;
+  const matte = maps && maps.matte && maps.matte._cover > 0.03 ? maps.matte : null;   // ignore when no person was found
   vary = vary || { seed: 0, angle: 0.45 };
   const scale = w / 912;   // effects were tuned on a 912px-wide image
   const cx = (w - 1) / 2, cy = (h - 1) / 2;
@@ -608,29 +795,35 @@ function process(src, w, h, p, outCanvas, vary, depth) {
     // blur amount at depth-map resolution, then shrunk a little (min filter) so loose hair and
     // other thin details just outside the depth outline stay sharp
     const dw = depth.width, dh = depth.height, ds = depth._data || depth.getContext('2d').getImageData(0, 0, dw, dh).data;
-    let a0 = new Float32Array(dw * dh), a1 = new Float32Array(dw * dh);
+    const a0 = new Float32Array(dw * dh);
     for (let j = 0; j < a0.length; j++) { let c = ds[j * 4] - f; c = ((c < 0 ? -c : c) - range) / 110; a0[j] = c < 0 ? 0 : c > 1 ? 1 : c; }
-    const rr = Math.max(1, Math.round(dw * 0.008));
-    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
-      let m = 1; for (let k = -rr; k <= rr; k++) { const xx = x + k; if (xx >= 0 && xx < dw) { const v = a0[y * dw + xx]; if (v < m) m = v; } }
-      a1[y * dw + x] = m;
-    }
-    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
-      let m = 1; for (let k = -rr; k <= rr; k++) { const yy = y + k; if (yy >= 0 && yy < dh) { const v = a1[yy * dw + x]; if (v < m) m = v; } }
-      a0[y * dw + x] = m;
-    }
+    const filt = (a, r, mx) => {      // separable min / max filter
+      const t = new Float32Array(dw * dh), o2 = new Float32Array(dw * dh);
+      for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+        const x0 = x - r < 0 ? 0 : x - r, x1 = x + r >= dw ? dw - 1 : x + r; let m = mx ? 0 : 1;
+        for (let k = x0; k <= x1; k++) { const v = a[y * dw + k]; if (mx ? v > m : v < m) m = v; }
+        t[y * dw + x] = m;
+      }
+      for (let y = 0; y < dh; y++) {
+        const y0 = y - r < 0 ? 0 : y - r, y1 = y + r >= dh ? dh - 1 : y + r;
+        for (let x = 0; x < dw; x++) { let m = mx ? 0 : 1; for (let k = y0; k <= y1; k++) { const v = t[k * dw + x]; if (mx ? v > m : v < m) m = v; } o2[y * dw + x] = m; }
+      }
+      return o2;
+    };
+    // inside the subject the amount is shrunk; with a matte, everything outside it takes the amount of the
+    // nearby background instead, so the gaps between hair strands blur while the strands stay sharp
+    const aIn = filt(a0, Math.max(1, Math.round(dw * 0.008)), false);
+    const aOut = matte ? filt(a0, Math.max(2, Math.round(dw * 0.03)), true) : aIn;
     const ac = newCanvas(dw, dh), acx = ac.getContext('2d'), ai = acx.createImageData(dw, dh);
-    for (let j = 0; j < a0.length; j++) { ai.data[j * 4] = ai.data[j * 4 + 1] = ai.data[j * 4 + 2] = a0[j] * 255; ai.data[j * 4 + 3] = 255; }
+    for (let j = 0; j < a0.length; j++) { ai.data[j * 4] = aIn[j] * 255; ai.data[j * 4 + 1] = aOut[j] * 255; ai.data[j * 4 + 3] = 255; }
     acx.putImageData(ai, 0, 0);
-    const dcv = newCanvas(w, h), dx = dcv.getContext('2d', { willReadFrequently: true });
-    dx.imageSmoothingQuality = 'high'; dx.drawImage(ac, 0, 0, w, h);
-    const dd = dx.getImageData(0, 0, w, h).data;
+    const dd = upscaleMap(ac, w, h), md = matte ? upscaleMap(matte, w, h) : null;
     const amt = new Float32Array(w * h);
     // layer whose alpha is the blur amount: blurring it and reading back (un-premultiplied) averages
     // only out-of-focus pixels, so the sharp subject does not smear into the background
     const lc = newCanvas(w, h), lx = lc.getContext('2d'), li = lx.createImageData(w, h), ld = li.data;
     for (let i = 0, j = 0; i < o.length; i += 4, j++) {
-      const c = dd[i] / 255;
+      const c = md ? (dd[i] * md[i] + dd[i + 1] * (255 - md[i])) / 65025 : dd[i] / 255;
       amt[j] = c; ld[i] = o[i]; ld[i + 1] = o[i + 1]; ld[i + 2] = o[i + 2]; ld[i + 3] = 6 + c * 249;
     }
     lx.putImageData(li, 0, 0);
@@ -670,6 +863,7 @@ function process(src, w, h, p, outCanvas, vary, depth) {
     bctx.filter = 'none'; bctx.globalAlpha = 1;
   }
   const img = bctx.getImageData(0, 0, w, h), d = img.data;
+  const parseD = parse ? upscaleMap(parse, w, h) : null;      // red = skin, green = hair
 
   // 1a. phone-style noise reduction (flattens low-contrast texture, keeps edges) and corner softness
   if (p.nr > 0 || p.edgeSoft > 0) {
@@ -684,6 +878,7 @@ function process(src, w, h, p, outCanvas, vary, depth) {
         const q = ((x - cx) * (x - cx) + (y - cy) * (y - cy)) * inv, we = edK * q * Math.sqrt(q);
         if (we > wt) wt = we;
       }
+      if (parseD) wt *= 1 - parseD[i + 1] / 255;               // keep hair crisp
       if (wt > 0) { d[i] += (bl[i] - d[i]) * wt; d[i + 1] += (bl[i + 1] - d[i + 1]) * wt; d[i + 2] += (bl[i + 2] - d[i + 2]) * wt; }
     }
     bctx.putImageData(img, 0, 0);
@@ -764,6 +959,9 @@ function process(src, w, h, p, outCanvas, vary, depth) {
     fringe = blurData(tc, w, h, 2.4 * scale);
   }
 
+  // 2d. light by shape: shading from depth normals + ambient occlusion in creases
+  const lightD = depth && (p.relight > 0 || p.contact > 0) ? upscaleMap(lightMap(depth, p.lightAngle), w, h) : null;
+
   // 3. low-res luminance grain field (bilinear upsampled for bigger grain)
   const gs = p.gsize, gw = Math.ceil(w / gs) + 2, gh = Math.ceil(h / gs) + 2;
   const field = new Float32Array(gw * gh);
@@ -779,6 +977,7 @@ function process(src, w, h, p, outCanvas, vary, depth) {
   const expGain = Math.pow(2, p.exp / 50);
   const warmR = 1 + p.warm / 50 * 0.12, warmB = 1 - p.warm / 50 * 0.12;
   const con = p.contrast / 100, sat = 1 + p.sat / 100, fade = p.fade / 100;
+  const relK = p.relight / 100 * 0.9;
   const shK = p.shadows / 100 * 0.7, ctK = p.contact / 100 * 2.5, volK = p.volume / 100 * 2.0, tintK = p.stint / 50 * 0.15;
   const skinK = p.skin / 100 * 0.11, texStep = 1 / Math.max(1, scale * 0.85);
   const clipK = p.clip / 100, clipGain = 1 + 2.2 * clipK, fringeK = p.fringe / 100 * 0.55 / 255, flareK = p.flare / 100 * 0.55;
@@ -811,9 +1010,14 @@ function process(src, w, h, p, outCanvas, vary, depth) {
         if (volK > 0) m *= Math.exp(volK * (Ls - (0.299 * mapW[i] + 0.587 * mapW[i + 1] + 0.114 * mapW[i + 2]) / 255));
         r *= m; g *= m; b *= m;
       }
+      if (lightD) {
+        let m = 1 + relK * (lightD[i] - 128) / 127;
+        if (ctK > 0) { const k = ctK * 0.25 * lightD[i + 1] / 255; m *= 1 - (k > 0.5 ? 0.5 : k); }
+        r *= m; g *= m; b *= m;
+      }
       if (tintK !== 0) { const t = tintK * (1 - L) * (1 - L); r *= 1 - t; b *= 1 + t; }
       if (skinK > 0) {
-        const m = skinMask(R8, G8, B8);
+        const m = parseD ? parseD[i] / 255 * (0.5 + 0.5 * skinMask(R8, G8, B8)) : skinMask(R8, G8, B8);
         if (m > 0) {
           const tx = x * texStep, tx0 = tx | 0, tfx = tx - tx0, a0 = tx0 & 255, a1 = (tx0 + 1) & 255;
           const t = ((TEX[tr0 + a0] * (1 - tfx) + TEX[tr0 + a1] * tfx) * (1 - tfy) + (TEX[tr1 + a0] * (1 - tfx) + TEX[tr1 + a1] * tfx) * tfy) * skinK * m;
